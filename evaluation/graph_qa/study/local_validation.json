@@ -1,0 +1,17 @@
+{
+  "artifact_build_id": "3e43d1d43b966e8100ba187e69a21fcd8f885b2586a1584b58c428c31851877e",
+  "units": 19144,
+  "questions": 120,
+  "focused_questions": 47,
+  "label_status": "DRAFT",
+  "evaluation_scope": "DEVELOPMENT_NOT_HELD_OUT",
+  "artifact_prepare_and_gold_validation": "PASS",
+  "real_adapter_initialization_both_arms": "PASS",
+  "actual_effective_config_differences": [
+    "graph.enabled"
+  ],
+  "bm25_top5_same_between_arms": true,
+  "live_llm_or_judge_called": false,
+  "kaggle_gpu_generation": "NOT_RUN",
+  "note": "Actual local artifact loading and BM25 smoke only; not a QA quality or Graph-benefit result."
+}

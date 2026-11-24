@@ -1,0 +1,50 @@
+# Stable v2 protocol. Dataset revisions validated on 2026-10-28.
+artifact: auto
+input_root: /kaggle/input
+base_config: src/online/backend/config/online_kaggle.yaml
+labor_gold: evaluation/gold/PhapDienAI_Gold_100_Labor_v0_2.zip
+labor_limit: null
+labor_seed_date: '2026-10-23'
+device: cuda:0
+repeats: 3
+qa_repeats: 1
+k: 10
+retrieval_methods:
+- bm25
+- dense
+- hybrid
+- hybrid_rerank
+- hybrid_graph
+- hybrid_graph_rerank
+stage_timeout_seconds: 32400
+total_timeout_seconds: 36000
+case_timeout_seconds: 240
+judge:
+  enabled: true
+  model_env: GEMINI_EVAL_MODEL
+zalo:
+  repo: minhnguyent546/zalo-ai-legal-text-retrieval-2021
+  revision: 5fb3df4300b3a81455fe09af444ec159afa8d212
+  qrels_split: test
+  limit: 100
+  batch_size: 8
+  max_length: 1024
+vlsp:
+  repo: VLSP2025-LegalSML/Public-Test
+  revision: fa2764145dffa9f54f8099a0247b4cc8ce40dd73
+  subset: syllogism_questions
+  split: train
+  limit: 50
+  selection: labor_keywords
+  query_date: '2025-07-15'
+  date_assumption: Assumed public-test release date; manually review time-sensitive
+    labels.
+ks:
+- 1
+- 3
+- 5
+- 10
+- 20
+evidence_annotations: null
+qa_block_size: 10
+qa_warmup: true

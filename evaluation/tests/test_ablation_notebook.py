@@ -1,0 +1,237 @@
+"""Synthetic tests: no API, Kaggle service, package install or model download."""
+import argparse,ast,contextlib,io,json,os,tempfile,unittest
+from pathlib import Path
+from types import ModuleType,SimpleNamespace
+from unittest.mock import Mock,patch
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'core'))
+import eval_core as e
+import test_evaluation as fixtures
+
+NB=Path(__file__).resolve().parents[1]/'notebooks/Kaggle_Ablation_Evaluation.ipynb'
+
+def cells():return json.loads(NB.read_text(encoding='utf8'))['cells']
+
+def notebook_scope():
+    scope={};exec(compile(''.join(cells()[1]['source']),'<config>','exec'),scope)
+    scope.update(os=os,json=json,subprocess=Mock(),PYTHON='synthetic-python')
+    display=ModuleType('IPython.display');display.display=Mock();display.FileLink=str
+    source=next(''.join(c['source']) for c in cells() if c['cell_type']=='code' and 'def model_environment' in ''.join(c['source']))
+    with patch.dict('sys.modules',{'IPython.display':display}):exec(compile(source,'<helpers>','exec'),scope)
+    return scope
+
+class AblationNotebookTests(unittest.TestCase):
+    def test_cells_parse_and_configurations_are_separate(self):
+        content=cells();source=[''.join(c['source']) for c in content if c['cell_type']=='code']
+        for s in source:ast.parse(s)
+        self.assertEqual([s for s in source if s.startswith('run_configuration(')],['run_configuration(ABLATION_CONFIG)'])
+        self.assertEqual([s for s in source if s.startswith('judge_configuration(')],['judge_configuration(ABLATION_CONFIG)'])
+        scope=notebook_scope();self.assertEqual(scope['ABLATION_CONFIG'],'full')
+        self.assertEqual(scope['ACTION'],'run_and_judge')
+        self.assertIsNone(scope['MAX_NEW_QUESTIONS']);self.assertIsNone(scope['MAX_NEW_JUDGMENTS'])
+        self.assertEqual(scope['OUT'].name,'full')
+        self.assertEqual(scope['BACKEND_GEMINI_MODEL'],'gemini-3.1-flash-lite')
+        self.assertEqual(scope['JUDGE_GEMINI_MODEL'],'gemini-3.5-flash-lite')
+    def test_timeout_policy_probe_executes_against_actual_config(self):
+        import subprocess,sys
+        source=next(''.join(c['source']) for c in cells() if c['cell_type']=='code' and 'guard_probe=' in ''.join(c['source']))
+        assignment=next(n for n in ast.walk(ast.parse(source)) if isinstance(n,ast.Assign)
+            and any(isinstance(t,ast.Name) and t.id=='guard_probe' for t in n.targets))
+        probe=ast.literal_eval(assignment.value)
+        # Execute the nested script, not only parse its containing cell.
+        result=subprocess.run([sys.executable,'-X','utf8','-c',probe],
+            cwd=NB.resolve().parents[2],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('TIMEOUT_POLICY_VERIFIED',result.stdout)
+
+    def test_auditor_contract_probe_executes_actual_packing_paths(self):
+        import subprocess,sys
+        source=next(''.join(c['source']) for c in cells() if c['cell_type']=='code' and 'contract_probe=' in ''.join(c['source']))
+        assignment=next(n for n in ast.walk(ast.parse(source)) if isinstance(n,ast.Assign)
+            and any(isinstance(t,ast.Name) and t.id=='contract_probe' for t in n.targets))
+        probe=ast.literal_eval(assignment.value)
+        result=subprocess.run([sys.executable,'-X','utf8','-c',probe],cwd=NB.resolve().parents[2],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('AUDITOR_ABLATION_CONTRACT_VERIFIED',result.stdout)
+
+    def test_checkpoint_restore_rejects_paths_outside_output(self):
+        import stat
+        from unittest.mock import MagicMock
+        source=next(''.join(c['source']) for c in cells() if c['cell_type']=='code' and 'if CHECKPOINT_ARCHIVE' in ''.join(c['source']))
+        prefix=source.split('OUT.mkdir(parents=True,exist_ok=True)')[0]
+        for filename in ['../escape','/absolute','nested'+chr(92)+'escape','C:escape','symlink']:
+            with self.subTest(filename=filename),tempfile.TemporaryDirectory() as tmp:
+                # Feed original member names: Windows ZipInfo normalizes its
+                # separator, whereas the actual Kaggle runtime is Linux.
+                out=Path(tmp)/'out';reader=Mock()
+                info=SimpleNamespace(filename=filename,file_size=10,external_attr=(stat.S_IFLNK<<16) if filename=='symlink' else 0)
+                reader.infolist.return_value=[info]
+                archive=MagicMock();archive.__enter__.return_value=reader
+                with patch('zipfile.ZipFile',return_value=archive):
+                    with self.assertRaises(RuntimeError):exec(compile(prefix,'<restore>','exec'),{'CHECKPOINT_ARCHIVE':'synthetic.zip','OUT':out})
+                reader.extractall.assert_not_called();self.assertFalse(out.exists())
+
+    def test_stage_credentials_and_backend_roles_are_scoped_and_restored(self):
+        scope=notebook_scope();scope['JUDGE_GEMINI_SECRET_NAME']='GEMINI_API_KEY.2'
+        client=Mock();client.get_secret.side_effect=lambda label:'SYNTHETIC_A' if label=='GEMINI_API_KEY' else 'SYNTHETIC_B'
+        kaggle=ModuleType('kaggle_secrets');kaggle.UserSecretsClient=Mock(return_value=client)
+        with patch.dict('sys.modules',{'kaggle_secrets':kaggle}),patch.dict(os.environ,{'GEMINI_API_KEY':'PREVIOUS','VN_LABOR_RESEARCHER_API_KEY':'STALE_ROLE_KEY'},clear=True):
+            for stage,key in [('generation','SYNTHETIC_A'),('judge','SYNTHETIC_B')]:
+                with scope['model_environment'](stage):
+                    self.assertEqual(os.environ['GEMINI_API_KEY'],key)
+                    from vn_labor_online.config import load_config
+                    cfg=load_config(Path(__file__).resolve().parents[2]/'src/online/backend/config/online_kaggle.yaml')
+                    self.assertEqual(cfg.researcher.model,'gemini-3.1-flash-lite')
+                    self.assertEqual(cfg.researcher.api_key,key)
+                    self.assertEqual(cfg.adjudication.review_model,'gemini-3.1-flash-lite')
+                    self.assertEqual(cfg.adjudication.model,'qwen3:8b')
+                    self.assertEqual((cfg.applicability.mode,cfg.applicability.provider,cfg.applicability.model),('hybrid','ollama','qwen3:8b'))
+                self.assertEqual(dict(os.environ),{'GEMINI_API_KEY':'PREVIOUS','VN_LABOR_RESEARCHER_API_KEY':'STALE_ROLE_KEY'})
+    def test_run_all_keeps_ollama_for_later_independent_cells(self):
+        scope=notebook_scope();self.assertTrue(scope['CLEANUP_OLLAMA']);scope['CLEANUP_OLLAMA']=False
+        source=''.join(cells()[-1]['source']);owned=Mock();owned.poll.return_value=None;log=Mock()
+        scope.update(OWN_OLLAMA=owned,OLLAMA_LOG=log)
+        with contextlib.redirect_stdout(io.StringIO()):exec(compile(source,'<cleanup>','exec'),scope)
+        owned.terminate.assert_not_called();log.close.assert_not_called()
+        scope['CLEANUP_OLLAMA']=True
+        with contextlib.redirect_stdout(io.StringIO()):exec(compile(source,'<cleanup>','exec'),scope)
+        owned.terminate.assert_called_once();log.close.assert_called_once()
+
+    def test_unselected_cells_make_no_calls(self):
+        scope=notebook_scope()
+        with contextlib.redirect_stdout(io.StringIO()):
+            scope['run_configuration']('without_graph');scope['ACTION']='generate_only';scope['judge_configuration']('full')
+        scope['subprocess'].run.assert_not_called()
+    def test_backend_and_judge_commands_do_not_cross_stages(self):
+        scope=notebook_scope()
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);out=root/'out';run=out/'runs/full';run.mkdir(parents=True)
+            (run/'run_manifest.json').write_text('{}')
+            (run/'responses.jsonl').write_text('')
+            scope.update(OUT=out,BUNDLE=out/'bundle120',SETTINGS=out/'settings.json',ROOT=root,
+                         model_environment=lambda _:contextlib.nullcontext(),export_checkpoint=Mock(),MAX_NEW_QUESTIONS=20,MAX_NEW_JUDGMENTS=20)
+            scope['subprocess'].run.return_value=SimpleNamespace(returncode=0)
+            scope['run_configuration']('full')
+            args=scope['subprocess'].run.call_args.args[0]
+            self.assertIn('--max-new-questions',args);self.assertIn('--resume',args);self.assertNotIn('--judge',args)
+            self.assertNotIn('--limit',args)
+            scope['ACTION']='judge_only';scope['judge_configuration']('full')
+            args=scope['subprocess'].run.call_args.args[0]
+            self.assertIn('judge',args);self.assertNotIn('run',args);self.assertIn('--max-new-judgments',args)
+            self.assertEqual(scope['export_checkpoint'].call_count,2)
+
+class AblationCompletedWithErrorsTests(unittest.TestCase):
+    def test_finished_schedule_with_error_does_not_skip_judge_cell(self):
+        scope=notebook_scope()
+        with tempfile.TemporaryDirectory() as tmp:
+            out=Path(tmp);destination=out/'runs/full';destination.mkdir(parents=True)
+            (destination/'progress.json').write_text(json.dumps({'expected':120,'saved':120,'paused':None,'complete':False}))
+            scope.update(OUT=out,BUNDLE=out/'bundle120',SETTINGS=out/'settings.json',ROOT=out,
+                model_environment=lambda _:contextlib.nullcontext(),export_checkpoint=Mock())
+            scope['subprocess'].run.return_value=SimpleNamespace(returncode=2)
+            with contextlib.redirect_stdout(io.StringIO()):scope['run_configuration']('full')
+            scope['export_checkpoint'].assert_called_once()
+
+    def test_capacity_pause_still_stops_before_judge(self):
+        scope=notebook_scope()
+        with tempfile.TemporaryDirectory() as tmp:
+            out=Path(tmp);destination=out/'runs/full';destination.mkdir(parents=True)
+            (destination/'progress.json').write_text(json.dumps({'expected':120,'saved':39,'paused':'UPSTREAM_CAPACITY_OR_CONFIGURATION','complete':False}))
+            scope.update(OUT=out,BUNDLE=out/'bundle120',SETTINGS=out/'settings.json',ROOT=out,
+                model_environment=lambda _:contextlib.nullcontext(),export_checkpoint=Mock())
+            scope['subprocess'].run.return_value=SimpleNamespace(returncode=2)
+            with contextlib.redirect_stdout(io.StringIO()),self.assertRaises(RuntimeError):scope['run_configuration']('full')
+            scope['export_checkpoint'].assert_called_once()
+
+    def test_budget_skip_without_content_is_not_a_successful_legal_refusal(self):
+        result={'claims':[],'warnings':['APPLICABILITY_COMPONENT_BUDGET_EXHAUSTED']}
+        self.assertEqual(e.infrastructure_failure(result),'COMPONENT_TIME_BUDGET_EXHAUSTED')
+        result['claims']=[{'text':'Independently verified content'}]
+        self.assertIsNone(e.infrastructure_failure(result))
+
+    def test_synthetic_warmup_checks_gpu_before_measured_queries(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        source=next(''.join(c['source']) for c in cells() if c['cell_type']=='code' and 'def warm_ollama' in ''.join(c['source']))
+        node=next(n for n in ast.walk(ast.parse(source)) if isinstance(n,ast.FunctionDef) and n.name=='warm_ollama')
+        with tempfile.TemporaryDirectory() as tmp:
+            body={'done':True,'message':{'content':'{"ready":true}'}}
+            response=MagicMock();response.__enter__.return_value=io.StringIO(json.dumps(body))
+            request=Mock(return_value='SYNTHETIC_REQUEST');open_request=Mock(return_value=response)
+            models=Mock(return_value={'models':[{'name':'qwen3:8b','size_vram':1024,'size':1024}]})
+            scope=dict(urllib=SimpleNamespace(request=SimpleNamespace(Request=request,urlopen=open_request)),
+                json=json,time=__import__('time'),WORK=Path(tmp),ollama_json=models)
+            exec(compile(ast.Module(body=[node],type_ignores=[]),'<warmup>','exec'),scope)
+            with contextlib.redirect_stdout(io.StringIO()):status=scope['warm_ollama']()
+            self.assertEqual(status['status'],'READY')
+            payload=json.loads(request.call_args.kwargs['data'])
+            self.assertEqual(payload['options']['num_ctx'],32768)
+            self.assertFalse(payload['think']);self.assertEqual(open_request.call_count,1)
+            self.assertEqual(payload['messages'][0]['content'],'Return a JSON object with ready equal to true.')
+            response.__enter__.return_value=io.StringIO(json.dumps(body))
+            models.return_value={'models':[{'name':'qwen3:8b','size_vram':0}]}
+            with self.assertRaises(RuntimeError):scope['warm_ollama']()
+
+class EvaluationBatchTests(unittest.TestCase):
+    def bundle(self,root):
+        q,_=fixtures.fixture_bundle(root/'bundle')
+        questions=[q,{**q,'id':'q2'}];e.write_rows(root/'bundle/questions.jsonl',questions)
+        m=e.read(root/'bundle/manifest.json');m['questions_sha256']=e.sha(root/'bundle/questions.jsonl');e.dump(root/'bundle/manifest.json',m)
+    def test_gpu_spec_policy_keeps_uuid_history_but_checks_real_spec(self):
+        base={'platform':'Linux','machine':'x86_64','processor':'','cpu_count':4,'hardware_id':None,
+              'gpu':'Tesla T4, GPU-original, 15360 MiB, 570.1'}
+        other={**base,'gpu':'Tesla T4, GPU-new, 15360 MiB, 570.1'}
+        self.assertEqual(e.comparison_hardware(base,'GPU_SPEC'),e.comparison_hardware(other,'GPU_SPEC'))
+        self.assertNotEqual(e.comparison_hardware(base),e.comparison_hardware(other))
+        changed={**other,'gpu':'Tesla T4, GPU-new, 15360 MiB, 580.1'}
+        self.assertNotEqual(e.comparison_hardware(base,'GPU_SPEC'),e.comparison_hardware(changed,'GPU_SPEC'))
+        with self.assertRaises(ValueError):e.comparison_hardware({**base,'gpu':None},'GPU_SPEC')
+        self.assertIn('GPU-original',base['gpu'])
+
+    def test_batching_preserves_selection_and_resumes_without_repeat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp);self.bundle(p)
+            e.dump(p/'settings.json',{'cache':str(p/'cache'),'device':'cpu','candidate_k':30,'embedding_identity':'FROM_BUNDLE'})
+            args=e.base_parser('test').parse_args(['run','--bundle',str(p/'bundle'),'--config',str(p/'settings.json'),
+                '--out',str(p/'run'),'--methods','bm25','--allow-draft','--max-new-questions','1'])
+            adapter=Mock();adapter.prepare.return_value={};adapter.run.return_value={'retrieved_ids':['u1'],'llm_calls':0}
+            env={'platform':'fixture','machine':'','processor':'','cpu_count':1,'gpu':None,'hardware_id':None,'packages':{}}
+            with patch('adapters.resolved_settings',return_value={}),patch('adapters.create',return_value=adapter),patch('eval_core.environment',return_value=env),patch('eval_core.plot_table'):
+                self.assertEqual(e.execute(args),2)
+                m=e.read(p/'run/run_manifest.json');self.assertEqual(len(m['selected_ids']),2)
+                self.assertEqual(e.read(p/'run/progress.json')['paused'],'BATCH_LIMIT')
+                args.resume=True;args.max_new_questions=2
+                self.assertEqual(e.execute(args),0);self.assertEqual(adapter.run.call_count,2)
+                self.assertEqual(e.execute(args),0);self.assertEqual(adapter.run.call_count,2)
+                self.assertEqual(e.read(p/'run/run_manifest.json')['comparison_key'],m['comparison_key'])
+    def test_bad_ollama_request_stops_after_first_error_before_wasting_batch(self):
+        from vn_labor_online.errors import LLMProviderError
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp);self.bundle(p);e.dump(p/'settings.json',{'cache':str(p/'cache'),'embedding_identity':'FROM_BUNDLE'})
+            args=e.base_parser('fixture').parse_args(['run','--bundle',str(p/'bundle'),'--config',str(p/'settings.json'),
+                '--out',str(p/'run'),'--methods','bm25','--allow-draft'])
+            adapter=Mock();adapter.prepare.return_value={};adapter.run.side_effect=LLMProviderError(safe_code='OLLAMA_HTTP_400')
+            env={'platform':'fixture','machine':'','processor':'','cpu_count':1,'gpu':None,'hardware_id':None,'packages':{}}
+            with patch('adapters.resolved_settings',return_value={}),patch('adapters.create',return_value=adapter),patch('eval_core.environment',return_value=env),patch('eval_core.plot_table'),contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(e.execute(args),2)
+            self.assertEqual(adapter.run.call_count,1)
+            progress=e.read(p/'run/progress.json')
+            self.assertEqual(progress['saved'],1);self.assertEqual(progress['expected'],2)
+            self.assertEqual(progress['paused'],'UPSTREAM_CAPACITY_OR_CONFIGURATION')
+
+    def test_judge_batch_skips_completed_scores_on_next_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp);self.bundle(p);run=p/'run';run.mkdir()
+            e.dump(run/'run_manifest.json',{'task':'qa','source_tree':e.source_tree(),
+                'settings':{'bundle_corpus':str(p/'bundle/corpus.jsonl'),'judge':{'provider':'gemini','model':'gemini-3.5-flash-lite'}}})
+            records=[{'id':qid,'status':'OK','metrics':{},'result':{'answer':'Synthetic','claims':[],'citations':[]}} for qid in ['q1','q2']]
+            # fixture question id is q1.
+            questions=e.rows(p/'bundle/questions.jsonl');records[0]['id']=questions[0]['id']
+            e.write_rows(run/'responses.jsonl',records)
+            provider=Mock();provider.structured.return_value={**{k:1. for k in ['correctness','completeness','evidence_support','relevance','temporal_application']},'reason':'Synthetic','task_scores':[]}
+            with patch('adapters.reader',return_value=provider),patch('eval_core.report_runs'):
+                first=e.judge_run(run,1);self.assertEqual(first['pending_saved_answers'],1)
+                second=e.judge_run(run,1);self.assertTrue(second['complete_for_saved_answers'])
+                e.judge_run(run,1);self.assertEqual(provider.structured.call_count,2)
+
+if __name__=='__main__':unittest.main()

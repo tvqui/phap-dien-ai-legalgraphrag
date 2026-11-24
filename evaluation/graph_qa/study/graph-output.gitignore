@@ -1,0 +1,5 @@
+results/
+work/
+*.zip
+__pycache__/
+*.b64.txt

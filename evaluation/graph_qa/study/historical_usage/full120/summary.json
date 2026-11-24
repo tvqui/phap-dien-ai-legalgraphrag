@@ -1,0 +1,15 @@
+{
+  "source_zip_sha256": "1deadd86a1f36aa66c16a15d31449ee60f427f38c116c35f6080103b72da24f0",
+  "records": 120,
+  "expanded": 12,
+  "accepted_extra_candidates": 6,
+  "accepted_and_selected": 2,
+  "accepted_and_cited": 1,
+  "accepted_and_claim_support": 1,
+  "unknown_trace": 0,
+  "interpretation": "POST_HOC_DESCRIPTIVE_ONLY_NOT_PROOF_OF_CAUSAL_BENEFIT",
+  "method": [
+    "full"
+  ],
+  "comparison_key": "97f413cc1c5d4acd365b4050b5c5115b12dad2f7c7c6326227cd1f9bd6aaf475"
+}
