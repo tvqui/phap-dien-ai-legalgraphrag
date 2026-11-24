@@ -97,11 +97,20 @@ class KaggleOnlineNotebookTests(unittest.TestCase):
         self.assertIn('--diagnose',args)
         self.assertEqual(run.call_args.kwargs['timeout'],120)
 
-    def test_select_artifact_reports_missing_offline_package(self):
+    def test_select_artifact_does_not_require_offline_package_checkout(self):
         self.scope['ROOT']=self.root/'stale_checkout'
+        expected=self.artifact()
         with patch.object(Path,'cwd',return_value=self.root/'cwd_without_project'):
-            with self.assertRaisesRegex(RuntimeError,'Cannot locate vn_labor_offline in the refactored GitHub checkout'):
-                self.scope['select_artifact'](self.root)
+            self.assertEqual(self.scope['select_artifact'](self.root),expected)
+
+    def test_notebook_artifact_layout_helpers_preserve_aliases_and_reject_unsafe_paths(self):
+        self.assertEqual(self.scope['runtime_name']('05_graph/nodes.jsonl'),'graph/nodes.jsonl')
+        self.assertEqual(self.scope['runtime_name']('06_indexes/retrieval_units.jsonl'),
+                         'retrieval/retrieval_units.jsonl')
+        self.assertEqual(self.scope['runtime_name']('reports/dense_validation.json'),
+                         'checks/dense_validation.json')
+        for invalid in ('../escape','/absolute','05_graph\\nodes.jsonl','C:/escape'):
+            with self.assertRaises(ValueError): self.scope['runtime_name'](invalid)
 
     def test_select_complete_unpacked_artifact(self):
         expected = self.artifact()
