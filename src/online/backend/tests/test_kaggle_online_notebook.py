@@ -1,0 +1,351 @@
+"""Execute notebook helpers and failure paths without installing models/services."""
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+import unittest
+import zipfile
+from unittest.mock import Mock, patch
+
+
+ROOT = Path(__file__).resolve().parents[4]
+spec = importlib.util.spec_from_file_location('online_notebook_generator', ROOT/'src/online/backend/kaggle/online_notebook.py')
+generator = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(generator)
+
+
+class KaggleOnlineNotebookTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.notebook = generator.make_notebook()
+        self.code = {cell['metadata']['name']: ''.join(cell['source'])
+                     for cell in self.notebook['cells'] if cell['cell_type']=='code'}
+        self.scope = {'Path': Path, 'WORKING': self.root/'working'}
+        self.scope['WORKING'].mkdir()
+        exec(self.code['helpers'], self.scope)
+
+    def artifact(self, name='new'):
+        root = self.root/name/'artifacts'
+        files = ('05_graph/nodes.jsonl', '05_graph/edges.jsonl', '06_indexes/retrieval_units.jsonl',
+                 'reports/dense_validation.json', 'reports/neo4j_validation.json')
+        for name in files:
+            target = root/name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('{}', encoding='utf-8')
+        (root/'reports/final_outputs_validation.json').write_text(json.dumps({
+            'stages': {key:True for key in ('registry','structure','graph','indexes')}}), encoding='utf-8')
+        return root.resolve()
+
+    def release(self):
+        return ({'compatible':True,'build_id':'build','retrieval_unit_fingerprint':'units','dense_fingerprint':'dense'},
+                {'expected_build_id':'build','expected_retrieval_unit_fingerprint':'units','expected_dense_fingerprint':'dense'})
+
+    def archive(self, name='renamed-result.zip', complete=True):
+        source = self.artifact('zip_source')
+        target = self.root/name
+        with zipfile.ZipFile(target, 'w') as archive:
+            for path in source.rglob('*'):
+                if path.is_file():
+                    payload = path.read_bytes()
+                    if not complete and path.name=='final_outputs_validation.json':
+                        payload = json.dumps({'stages':{'registry':True}}).encode()
+                    archive.writestr('artifacts/'+path.relative_to(source).as_posix(),payload)
+        import shutil
+        shutil.rmtree(source.parent)
+        return target.resolve()
+
+    def test_notebook_roundtrip_syntax_and_clean_outputs(self):
+        target = self.root/'notebook.ipynb'
+        report = generator.write_notebook(target)
+        notebook = json.loads(target.read_text(encoding='utf-8'))
+        self.assertEqual(len({cell['id'] for cell in notebook['cells']}), len(notebook['cells']))
+        for cell in notebook['cells']:
+            if cell['cell_type']=='code':
+                compile(''.join(cell['source']), cell['metadata']['name'], 'exec')
+                self.assertEqual(cell['outputs'], [])
+                self.assertIsNone(cell['execution_count'])
+        self.assertEqual(notebook['cells'][-1]['metadata']['name'], 'backend')
+        self.assertEqual(report['sha256'], hashlib.sha256(target.read_bytes()).hexdigest())
+        self.assertTrue(Path(str(target)+'.sha256').is_file())
+
+    def test_selected_model_is_preserved_and_cannot_inject_code(self):
+        notebook=generator.make_notebook('gemini-3.1-flash-lite')
+        settings=next(''.join(c['source']) for c in notebook['cells'] if c['metadata']['name']=='settings')
+        scope={}; exec(settings,scope)
+        self.assertEqual(scope['GEMINI_MODEL'],'gemini-3.1-flash-lite')
+        self.assertEqual(scope['GEMINI_PROBE_TIMEOUT_SECONDS'],60)
+        for invalid in ('', 'gemini-x\nraise Exception()', "gemini-x'; print('bad')"):
+            with self.assertRaises(ValueError): generator.make_notebook(invalid)
+
+    def test_probe_cell_requests_bounded_diagnostics_before_backend(self):
+        run=Mock()
+        self.scope.update(PYTHON=Path('/python'),CONFIG=Path('/config'),GEMINI_MODEL='gemini-3.1-flash-lite',
+            ROOT=self.root,GEMINI_PROBE_TIMEOUT_SECONDS=60,run_step=run)
+        with contextlib.redirect_stdout(io.StringIO()): exec(self.code['gemini_check'],self.scope)
+        args=run.call_args.args[0]
+        self.assertEqual(args[args.index('--probe-timeout')+1],'60')
+        self.assertIn('--diagnose',args)
+        self.assertEqual(run.call_args.kwargs['timeout'],120)
+
+    def test_select_complete_unpacked_artifact(self):
+        expected = self.artifact()
+        self.assertEqual(self.scope['select_artifact'](self.root), expected)
+
+    def test_does_not_prefer_old_zip_over_new_directory(self):
+        self.archive('vn_labor_results.zip')
+        self.artifact()
+        with self.assertRaisesRegex(RuntimeError, '2'):
+            self.scope['select_artifact'](self.root)
+
+    def test_arbitrary_dataset_and_zip_names_are_selected_by_content(self):
+        expected = self.archive('final_labor_2030.ZIP')
+        self.assertEqual(self.scope['select_artifact'](self.root), expected)
+        self.assertEqual(self.scope['select_artifact'](self.root, str(expected)), expected)
+
+    def test_source_bundle_and_checkpoint_do_not_compete_with_final_data(self):
+        self.archive('technical_checkpoint.zip', complete=False)
+        with zipfile.ZipFile(self.root/'source_bundle.zip', 'w') as archive:
+            archive.writestr('README.md', 'code only')
+        expected = self.artifact('completely-different-dataset-name')
+        self.assertEqual(self.scope['select_artifact'](self.root), expected)
+
+    def test_invalid_zip_is_not_accepted_only_because_of_its_name(self):
+        target = self.root/'vn_labor_results.zip'
+        target.write_bytes(b'not a ZIP')
+        with self.assertRaisesRegex(RuntimeError, '0'):
+            self.scope['select_artifact'](self.root)
+        with self.assertRaisesRegex(RuntimeError, 'OFFLINE'):
+            self.scope['select_artifact'](self.root, str(target))
+
+    def test_incomplete_explicit_directory_and_failed_report_are_rejected(self):
+        target = self.artifact()
+        (target/'reports/final_outputs_validation.json').write_text(
+            json.dumps({'stages':{'registry':True,'structure':True,'graph':False,'indexes':True}}))
+        with self.assertRaises(RuntimeError):
+            self.scope['select_artifact'](self.root, str(target))
+
+    def test_explicit_dataset_parent_is_supported(self):
+        target = self.artifact()
+        self.assertEqual(self.scope['select_artifact'](self.root, str(target.parent)),target.parent)
+
+    def test_multiple_valid_archives_require_explicit_choice(self):
+        self.archive('first.zip')
+        expected = self.archive('second.zip')
+        with self.assertRaisesRegex(RuntimeError, '2'):
+            self.scope['select_artifact'](self.root)
+        self.assertEqual(self.scope['select_artifact'](self.root, str(expected)), expected)
+
+    def test_malformed_validation_is_not_a_final_artifact(self):
+        target = self.artifact()
+        (target/'reports/final_outputs_validation.json').write_text('[]')
+        with self.assertRaisesRegex(RuntimeError, '0'):
+            self.scope['select_artifact'](self.root)
+
+    def test_partial_directory_is_not_a_final_artifact(self):
+        root = self.artifact()
+        (root/'05_graph/nodes.jsonl').unlink()
+        with self.assertRaisesRegex(RuntimeError, '0'):
+            self.scope['select_artifact'](self.root)
+
+    def test_explicit_input_resolves_ambiguity_without_escaping_input(self):
+        expected = self.artifact()
+        self.artifact('other')
+        self.assertEqual(self.scope['select_artifact'](self.root, str(expected)), expected)
+        with self.assertRaises(RuntimeError):
+            self.scope['select_artifact'](self.root, str(self.root.parent))
+        with self.assertRaises(RuntimeError):
+            self.scope['select_artifact'](self.root, str(self.root/'missing'))
+
+    def test_all_release_fingerprints_and_real_compatibility_are_required(self):
+        pin, effective = self.release()
+        self.scope['assert_release'](pin, effective)
+        for field in ('build_id','retrieval_unit_fingerprint','dense_fingerprint','compatible'):
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                self.scope['assert_release']({**pin,field:'wrong'}, effective)
+        with self.assertRaises(RuntimeError):
+            self.scope['assert_release'](pin, {'expected_build_id':'build'})
+
+    def test_archive_digest_must_match_and_directory_needs_no_fake_zip_hash(self):
+        pin, effective = self.release()
+        self.scope['assert_release'](pin, effective)
+        with self.assertRaisesRegex(RuntimeError, 'SHA-256'):
+            self.scope['assert_release']({**pin,'archive_sha256':'new-zip'},
+                                        {**effective,'expected_archive_sha256':'old-zip'})
+        self.scope['assert_release']({**pin,'archive_sha256':'new-zip'},
+                                    {**effective,'expected_archive_sha256':'new-zip'})
+
+    def test_new_build_uses_selected_pin_without_comparing_old_base_release(self):
+        pin, selected = self.release()
+        artifact = self.root/'new-dataset'/'artifacts'
+        profile = dict(researcher='gemini',reviewer='gemini',semantic_review=True,
+                       applicability='hybrid',adjudication='ollama',dense=True,bm25=True,
+                       reranker=True,graph=True,researcher_model='chosen',reviewer_model='chosen')
+        effective = {'selected':selected,'artifact_source':str(artifact),'profile':profile,
+                     'base':{'expected_build_id':'old-build'}}
+        def pin_output(args,*a,on_line=None,**kwargs):
+            on_line(json.dumps(pin))
+        self.scope.update(ROOT=self.root,PYTHON=Path('/python'),CONFIG=Path('/config'),
+                          ARTIFACT_PATH=artifact,run_step=pin_output,GEMINI_MODEL='chosen',
+                          NOTEBOOK_VALIDATED=True)
+        with patch('subprocess.check_output',return_value=json.dumps(effective)), \
+             contextlib.redirect_stdout(io.StringIO()):
+            exec(self.code['pin_config'],self.scope)
+        self.assertFalse(self.scope['NOTEBOOK_VALIDATED'])
+        # A stale environment override must not redirect this session to another dataset.
+        effective['artifact_source']=str(self.root/'old-dataset')
+        with patch('subprocess.check_output',return_value=json.dumps(effective)), \
+             self.assertRaisesRegex(RuntimeError,'Input khác'):
+            exec(self.code['pin_config'],self.scope)
+
+    def test_tail_is_bounded_and_redacts_secret(self):
+        target = self.root/'log'
+        target.write_text('x'*30000+'private-key-value', encoding='utf-8')
+        with patch.dict(os.environ, {'GEMINI_API_KEY':'private-key-value'}):
+            result = self.scope['log_tail'](target, limit=100)
+        self.assertNotIn('private-key-value', result)
+        self.assertIn('[REDACTED]', result)
+        self.assertLess(len(result), 110)
+        self.assertIsInstance(self.scope['log_tail'](self.root/'missing'), str)
+
+    def test_actual_tunnel_url_is_saved_without_secret(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), patch.dict(os.environ, {'VN_LABOR_API_KEY':'fixture-key'}):
+            self.scope['backend_line']('REMOTE_BACKEND_URL=https://example.ngrok-free.dev')
+        self.assertIn('VITE_BACKEND_TARGET=https://example.ngrok-free.dev', output.getvalue())
+        self.assertNotIn('fixture-key', output.getvalue())
+        self.assertEqual((self.scope['WORKING']/'remote_backend_url.txt').read_text().strip(),
+                         'https://example.ngrok-free.dev')
+        with self.assertRaises(RuntimeError):
+            self.scope['backend_line']('REMOTE_BACKEND_URL=http://insecure')
+
+    def test_failed_gemini_probe_invalidates_previous_success(self):
+        self.scope.update(PYTHON=Path('/python'), CONFIG=Path('/config'), GEMINI_MODEL='model',
+                          ROOT=self.root, NOTEBOOK_VALIDATED=True,
+                          run_step=Mock(side_effect=RuntimeError('provider unavailable')))
+        with self.assertRaisesRegex(RuntimeError, 'provider unavailable'):
+            exec(self.code['gemini_check'], self.scope)
+        self.assertFalse(self.scope['NOTEBOOK_VALIDATED'])
+        with self.assertRaises(RuntimeError):
+            exec(self.code['backend'], self.scope)
+        self.assertEqual(self.scope['run_step'].call_count, 1)
+
+    def test_successful_probe_allows_serve_and_passes_model_and_config(self):
+        run = Mock()
+        self.scope.update(PYTHON=Path('/python'), CONFIG=Path('/config'), GEMINI_MODEL='model',
+                          ROOT=self.root, OLLAMA_MODEL='qwen3:8b', ARTIFACT_PATH=self.root/'artifacts',
+                          READY_TIMEOUT_SECONDS=180, run_step=run, assert_ports_free=Mock())
+        with contextlib.redirect_stdout(io.StringIO()):
+            exec(self.code['gemini_check'], self.scope)
+            exec(self.code['backend'], self.scope)
+        self.assertTrue(self.scope['NOTEBOOK_VALIDATED'])
+        args, kwargs = run.call_args
+        self.assertIn('--config', args[0])
+        self.assertIn(Path('/config'), args[0])
+        self.assertIn('qwen3:8b', args[0])
+        self.assertIsNone(kwargs['timeout'])
+        self.assertEqual(kwargs['on_line'], self.scope['backend_line'])
+
+    def test_old_service_prevents_second_backend_launch(self):
+        run = Mock()
+        self.scope.update(NOTEBOOK_VALIDATED=True, run_step=run,
+                          assert_ports_free=Mock(side_effect=RuntimeError('old service')))
+        with self.assertRaisesRegex(RuntimeError, 'old service'):
+            exec(self.code['backend'], self.scope)
+        run.assert_not_called()
+
+    def test_fresh_secrets_replace_old_role_key_without_printing_credentials(self):
+        self.artifact()
+        values = {'GEMINI_API_KEY':'new-gemini-key', 'VN_LABOR_API_KEY':'a'*40,
+                  'NGROK_AUTHTOKEN':'new-ngrok-token'}
+        client = SimpleNamespace(get_secret=lambda name:values.get(name,''))
+        fake_kaggle = SimpleNamespace(UserSecretsClient=lambda:client)
+        self.scope.update(sys=SimpleNamespace(platform='linux',version_info=(3,13)),
+            INPUT_ROOT=self.root, ARTIFACT='', GEMINI_MODEL='chosen-model', GEMINI_RPM=13,
+            OLLAMA_MODEL='qwen3:8b', assert_ports_free=Mock(), NOTEBOOK_VALIDATED=True)
+        response = Mock(status=200)
+        response.__enter__=Mock(return_value=response)
+        response.__exit__=Mock(return_value=None)
+        output = io.StringIO()
+        with patch.dict('sys.modules',{'kaggle_secrets':fake_kaggle}), \
+             patch.dict(os.environ, {'VN_LABOR_RESEARCHER_API_KEY':'stale','HF_TOKEN':'old-hf'}), \
+             patch('shutil.which', return_value='/usr/bin/nvidia-smi'), \
+             patch('subprocess.run', return_value=SimpleNamespace(stdout='Tesla T4\nTesla T4\n')), \
+             patch('urllib.request.urlopen', return_value=response), contextlib.redirect_stdout(output):
+            exec(self.code['preflight'], self.scope)
+            self.assertEqual(os.environ['VN_LABOR_RESEARCHER_API_KEY'],values['GEMINI_API_KEY'])
+            self.assertEqual(os.environ['VN_LABOR_GEMINI_RPM'],'13')
+            self.assertNotIn('HF_TOKEN',os.environ)
+            self.assertEqual(os.environ['VN_LABOR_ADJUDICATION_REVIEW_PROVIDER'],'gemini')
+        self.assertFalse(self.scope['NOTEBOOK_VALIDATED'])
+        for secret in values.values(): self.assertNotIn(secret,output.getvalue())
+
+    def test_no_gpu_fails_before_install_or_secret_access(self):
+        self.scope.update(sys=SimpleNamespace(platform='linux',version_info=(3,13)),
+                          INPUT_ROOT=self.root, NOTEBOOK_VALIDATED=True)
+        with patch('shutil.which', return_value=None), self.assertRaisesRegex(RuntimeError, 'GPU'):
+            exec(self.code['preflight'], self.scope)
+        self.assertFalse(self.scope['NOTEBOOK_VALIDATED'])
+
+    def test_dependency_install_uses_isolated_python_and_existing_torch_constraints(self):
+        repo = self.root/'repo'
+        (repo/'.git').mkdir(parents=True)
+        (repo/'src/online/backend/src/vn_labor_online').mkdir(parents=True)
+        (repo/'src/online/backend/src/vn_labor_online/api.py').write_text('diagnostic-probe-v2',encoding='utf-8')
+        (repo/'src/online/backend/src/vn_labor_online/gemini_diagnostics.py').write_text('# fixture',encoding='utf-8')
+        (repo/'src/online/backend/kaggle').mkdir(parents=True)
+        (repo/'src/online/backend/kaggle/check_gemini.py').write_text('--probe-timeout',encoding='utf-8')
+        calls = []
+        def git_output(args, **kwargs):
+            return {'remote':'https://github.com/tvqui/legal-agentic-rag.git\n',
+                    'status':'','rev-parse':'new-main-sha\n'}[args[1]]
+        self.scope.update(ROOT=repo, REPO_URL='https://github.com/tvqui/legal-agentic-rag.git',
+            BRANCH='main', PYTHON=self.root/'env/bin/python',
+            run_step=lambda args,*a,**kw:calls.append(list(map(str,args))))
+        with patch('subprocess.check_output',side_effect=git_output), \
+             patch('importlib.metadata.version',return_value='2.8.0'), \
+             patch('shutil.which',return_value='/usr/bin/ollama'), contextlib.redirect_stdout(io.StringIO()):
+            exec(self.code['setup'], self.scope)
+        pip = next(call for call in calls if 'pip' in call)
+        self.assertEqual(pip[pip.index('--python')+1],str(self.scope['PYTHON']))
+        self.assertIn('-c',pip)
+        self.assertIn('torch==2.8.0',(self.scope['WORKING']/'torch_constraints.txt').read_text())
+        self.assertEqual(sum(call[:2]==['apt-get','update'] for call in calls),1)
+        self.assertTrue(any('--system-site-packages' in call for call in calls))
+
+    def test_pin_incompatible_report_cannot_become_success(self):
+        pin, expected = self.release()
+        pin['compatible']=False
+        def pin_output(args,*a,on_line=None,**kwargs):
+            on_line(json.dumps(pin))
+        self.scope.update(ROOT=self.root,PYTHON=Path('/python'),CONFIG=Path('/config'),
+                          ARTIFACT_PATH=self.root/'artifacts',run_step=pin_output,
+                          NOTEBOOK_VALIDATED=True)
+        with patch('subprocess.check_output',return_value=json.dumps({'base':expected,'selected':expected})), \
+             self.assertRaisesRegex(RuntimeError, 'tương thích'):
+            exec(self.code['pin_config'],self.scope)
+        self.assertFalse(self.scope['NOTEBOOK_VALIDATED'])
+
+    def test_subprocess_log_redacts_output_and_reports_exit_failure(self):
+        output=io.StringIO()
+        with patch.dict(os.environ,{'GEMINI_API_KEY':'secret-fixture-value'}), \
+             contextlib.redirect_stdout(output):
+            self.scope['run_step']([self.scope['sys'].executable,'-c',
+                'import os;print(os.environ["GEMINI_API_KEY"])'],'fixture',timeout=10)
+            with self.assertRaisesRegex(RuntimeError,'exit=7'):
+                self.scope['run_step']([self.scope['sys'].executable,'-c','raise SystemExit(7)'],
+                                       'failure',timeout=10)
+        self.assertNotIn('secret-fixture-value',output.getvalue())
+        self.assertIn('[REDACTED]',(self.scope['WORKING']/'notebook_logs/fixture.log').read_text())
+
+
+if __name__=='__main__':
+    unittest.main()

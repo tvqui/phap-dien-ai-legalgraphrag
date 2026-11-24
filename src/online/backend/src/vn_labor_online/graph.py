@@ -1,0 +1,183 @@
+from __future__ import annotations
+import heapq,re,time
+from collections.abc import Mapping
+from collections import defaultdict
+from .artifact_store import ArtifactStore
+from .config import GraphConfig
+from .models import Evidence
+from .retrieval import as_evidence,authority_score,_terms
+
+GAP_RELATIONS={
+  'applicable_version':{'AMENDS':{'IN','OUT'},'REPEALS':{'IN','OUT'},'REPLACES':{'IN','OUT'},'VERSION_OF':{'IN','OUT'}},
+  'mandatory_reference':{'REFERENCES':{'OUT'},'IMPLEMENTS':{'IN','OUT'}},
+  'implementing_regulation':{'IMPLEMENTS':{'IN'},'REFERENCES':{'OUT'}},
+  'amendment_history':{'AMENDS':{'IN','OUT'},'REPEALS':{'IN','OUT'},'REPLACES':{'IN','OUT'},'VERSION_OF':{'IN','OUT'}},
+  'exceptions':{'REFERENCES':{'OUT'},'PART_OF':{'IN','OUT'},'NEXT':{'IN','OUT'}},
+  'conditions':{'REFERENCES':{'OUT'},'PART_OF':{'IN','OUT'},'NEXT':{'IN','OUT'}},
+  'termination_conditions':{'REFERENCES':{'OUT'},'PART_OF':{'IN','OUT'},'NEXT':{'IN','OUT'},'RELATES_TO_ISSUE':{'IN','OUT'}},
+  'notice_requirement':{'REFERENCES':{'OUT'},'PART_OF':{'IN','OUT'},'NEXT':{'IN','OUT'},'RELATES_TO_ISSUE':{'IN','OUT'}},
+  'case_law':{'CITES':{'IN','OUT'},'HAS_ISSUE':{'IN','OUT'},'RELATES_TO_ISSUE':{'IN','OUT'},'SIMILAR_TO':{'IN','OUT'},'BELONGS_TO':{'IN','OUT'}},
+  'governing_rule':{'CITES':{'OUT'},'RELATES_TO_ISSUE':{'IN','OUT'},'IMPLEMENTS':{'OUT'},'REFERENCES':{'IN','OUT'},'PART_OF':{'IN','OUT'}},
+  'official_source':{'VERSION_OF':{'IN','OUT'},'PART_OF':{'IN','OUT'}},
+  'transitional_rule':{'REFERENCES':{'IN','OUT'},'VERSION_OF':{'IN','OUT'},'PART_OF':{'IN','OUT'}},
+}
+
+# Profile-specific gaps guide traversal through the existing graph. No new
+# node/edge type is assumed, and the configured budgets still apply.
+PROFILE_SLOT_NAMES={
+  'probation_duration','training_contract','training_liability','apprenticeship_rules','apprenticeship_fee',
+  'overtime_limits','overtime_extended_conditions','overtime_pay','night_pay','night_overtime_pay','night_overtime_formula',
+  'employee_unilateral_rule','employer_unilateral_rule','employer_protection_rule',
+  'expiry_rule','dismissal_ground_rule','dismissal_procedure_rule','restructuring_ground_rule',
+  'employment_plan_rule','enterprise_transfer_rule','employer_legal_consequences',
+  'severance_rule','job_loss_allowance_rule','public_holiday_rule','personal_leave_rule',
+  'unpaid_leave_rule','unused_leave_payment_rule','agreement_rule','travel_time_rule',
+  'leave_base_rule','seniority_rule','proportional_leave_rule','leave_calculation_rule',
+  'legal_classification','legal_consequences','withdrawal_rule','special_notice_delegation','special_notice_rule',
+}
+for slot in PROFILE_SLOT_NAMES:
+    GAP_RELATIONS.setdefault(slot,{'REFERENCES':{'OUT'},'PART_OF':{'IN','OUT'},'IMPLEMENTS':{'IN'}})
+
+
+def preferred_relations(gaps,requirement_slots=()):
+    preferred={}
+    for gap in gaps:
+        relations=GAP_RELATIONS.get(gap)
+        if relations is None and gap in requirement_slots:
+            # A new source-backed requirement should not need a second manual
+            # registry entry just to traverse legal references and hierarchy.
+            relations={'REFERENCES':{'OUT'},'PART_OF':{'IN','OUT'},'IMPLEMENTS':{'IN'}}
+        for relation,directions in (relations or {}).items():
+            preferred.setdefault(relation,set()).update(directions)
+    return preferred
+
+def search_seeds(accepted,source_audited,decisions,limit):
+    """Unresolved applicability can seed a search, never a legal answer.
+
+    A verified source relevant to the question may point to a missing exception
+    or prerequisite. Hard failures and unverified source text remain excluded.
+    """
+    unresolved={d.evidence_id for d in decisions if d.audit_status=='UNRESOLVED'
+        and d.relevant and d.supports_claim}
+    result={item.unit_id:item for item in accepted if item.verified}
+    for item in source_audited:
+        if len(result)>=limit:break
+        if item.verified and item.unit_id in unresolved:result.setdefault(item.unit_id,item)
+    return list(result.values())[:limit]
+
+class GraphExplorer:
+    def __init__(self,store:ArtifactStore,cfg:GraphConfig):
+        self.store=store; self.cfg=cfg; self.adj=defaultdict(list); self.degree=defaultdict(int)
+        # Built once, not an all-edge scan for each reranked question. Only
+        # outgoing statutory references, never hierarchy/similarity, enter it.
+        self.references_by_source=defaultdict(set)
+        for edge in store.edges:
+            if edge['type']=='REFERENCES': self.references_by_source[edge['source']].add(edge['target'])
+            self.adj[edge['source']].append((edge,edge['target'],'OUT'))
+            self.adj[edge['target']].append((edge,edge['source'],'IN'))
+            self.degree[edge['source']]+=1; self.degree[edge['target']]+=1
+        self.max_degree=max(self.degree.values(),default=1)
+        self._node_features={}
+    def expand_round(self,frontier_ids:list[str],gaps:list[str],query:str,visited:set[str],paths:dict[str,list[str]],
+                     remaining_nodes:int,remaining_edges:int,relation_paths:dict[str,list[str]]|None=None,
+                     direction_paths:dict[str,list[str]]|None=None,wall_clock_ms:float|None=None,*,requirement_slots=()):
+        started=time.monotonic(); queue=[]; serial=0
+        time_limit=min(float(self.cfg.wall_clock_ms),float(wall_clock_ms)) if wall_clock_ms is not None else float(self.cfg.wall_clock_ms)
+        relation_paths=relation_paths if relation_paths is not None else {}
+        direction_paths=direction_paths if direction_paths is not None else {}
+        fixed=self.cfg.mode=='fixed'
+        preferred=preferred_relations(gaps,requirement_slots)
+        query_terms=_terms(query)
+        # Only missing planned locators influence ordering. This is a search
+        # hint: no candidate is verified here and source/time audit still follows.
+        missing_locators=[locator for gap in gaps for group in requirement_slots.get(gap,[]) for locator in group] if isinstance(requirement_slots,Mapping) else []
+        from .taxonomy import locator_matches
+        from .runtime import checkpoint
+        preparation_expired=False
+        for source in frontier_ids:
+            for edge,target,direction in self.adj.get(source,[]):
+                checkpoint()
+                if (time.monotonic()-started)*1000>=time_limit:
+                    preparation_expired=True;break
+                if edge['type'] not in self.cfg.allowed_relations: continue
+                if target in visited: continue
+                if not fixed and (not preferred or direction not in preferred.get(edge['type'],set())): continue
+                score,parts=self._score(edge,target,gaps,query,source,direction,_query_terms=query_terms,_preferred=preferred)
+                unit=self.store.units_by_id.get(target)
+                matches=bool(unit and any(locator_matches(unit,loc) for loc in missing_locators))
+                parts['missing_requirement_match']=float(matches)
+                # Lexicographic priority protects a missing cited rule from
+                # keyword-heavy neighbours when the node budget is small.
+                heapq.heappush(queue,(-int(matches),-score,serial,target,source,edge,direction,parts)); serial+=1
+            if preparation_expired:break
+        added=[]; new_frontier=[]; edge_count=0; followed=[]; stop_reason='TIME_BUDGET' if preparation_expired else None
+        while queue and len(new_frontier)<remaining_nodes and edge_count<remaining_edges:
+            checkpoint()
+            if (time.monotonic()-started)*1000>=time_limit:
+                stop_reason='TIME_BUDGET'; break
+            _,neg,_,node_id,parent,edge,direction,parts=heapq.heappop(queue); edge_count+=1
+            if node_id in visited: continue
+            visited.add(node_id); new_frontier.append(node_id)
+            if edge['type'] in preferred: followed.append(edge['type'])
+            paths[node_id]=paths.get(parent,[])+[edge['id']]
+            relation_paths[node_id]=relation_paths.get(parent,[])+[edge['type']]
+            direction_paths[node_id]=direction_paths.get(parent,[])+[direction]
+            unit=self.store.units_by_id.get(node_id)
+            if unit:
+                added.append(as_evidence(unit,max(0,-neg),'graph',len(added)+1,parts).model_copy(update={
+                  'graph_path':paths[node_id],'graph_relations':relation_paths[node_id],
+                  'graph_directions':direction_paths[node_id]}))
+        if stop_reason is None and queue and len(new_frontier)>=remaining_nodes: stop_reason='NODE_BUDGET'
+        if stop_reason is None and queue and edge_count>=remaining_edges: stop_reason='EDGE_BUDGET'
+        return added,new_frontier,{'nodes_added':len(new_frontier),'edges_visited':edge_count,'stop_reason':stop_reason,
+          'critical_edges_followed':list(dict.fromkeys(followed)),'elapsed_ms':round((time.monotonic()-started)*1000,2)}
+    def expand(self,seeds:list[Evidence],gaps:list[str],query:str='')->tuple[list[Evidence],dict]:
+        """Compatibility wrapper that performs bounded multi-round expansion."""
+        seeds=seeds[:self.cfg.max_nodes]
+        visited={e.unit_id for e in seeds}; paths={e.unit_id:list(e.graph_path) for e in seeds}
+        relation_paths={e.unit_id:list(e.graph_relations) for e in seeds}; direction_paths={e.unit_id:list(e.graph_directions) for e in seeds}
+        # Preserve the incoming retrieval order for queue tie-breaking and
+        # bounded expansion; set iteration varies between Python processes.
+        frontier=list(dict.fromkeys(e.unit_id for e in seeds))
+        all_added=[]; edge_count=0; rounds=0; followed=[]; started=time.monotonic()
+        round_limit=min(self.cfg.max_rounds,self.cfg.max_hops)
+        while frontier and rounds<round_limit and len(visited)<self.cfg.max_nodes and edge_count<self.cfg.max_edges:
+            remaining_ms=self.cfg.wall_clock_ms-(time.monotonic()-started)*1000
+            if remaining_ms<=0: break
+            added,frontier,stats=self.expand_round(frontier,gaps,query,visited,paths,self.cfg.max_nodes-len(visited),self.cfg.max_edges-edge_count,
+              relation_paths,direction_paths,remaining_ms)
+            all_added.extend(added); edge_count+=stats['edges_visited']; followed+=stats['critical_edges_followed']; rounds+=1
+            if not frontier or stats['stop_reason'] in {'TIME_BUDGET','NODE_BUDGET','EDGE_BUDGET'}: break
+        return all_added,{'nodes_visited':len(visited),'edges_visited':edge_count,'rounds':rounds,
+          'critical_edges_followed':list(dict.fromkeys(followed)),'elapsed_ms':round((time.monotonic()-started)*1000,2)}
+    def _features(self,node_id):
+        if node_id not in self._node_features:
+            unit=self.store.units_by_id.get(node_id)
+            props=(self.store.nodes_by_id.get(node_id) or {}).get('properties') or {}
+            text=(unit or {}).get('text') or ' '.join(str(v) for v in props.values() if isinstance(v,(str,int)))
+            self._node_features[node_id]=(_terms(text),authority_score(as_evidence(unit,0,'graph',0)) if unit else 0,
+                float(bool(unit and (unit.get('provision_temporal_verified') or unit.get('temporal_verified')))))
+        return self._node_features[node_id]
+
+    def _score(self,edge,target,gaps,query,parent,direction,*,_query_terms=None,_preferred=None):
+        typ=edge['type']; legal=self.cfg.edge_weights.get(typ,0)
+        query_terms=_query_terms if _query_terms is not None else _terms(query)
+        target_terms,authority,temporal=self._features(target)
+        parent_terms,_,_=self._features(parent)
+        relevance=len(query_terms&target_terms)/max(1,len(query_terms))
+        preferred=_preferred
+        if preferred is None:
+            preferred={}
+            for item in gaps:
+                for relation,directions in GAP_RELATIONS.get(item,{}).items(): preferred.setdefault(relation,set()).update(directions)
+        gap=float(direction in preferred.get(typ,set()))
+        union=target_terms|parent_terms
+        redundancy=len(target_terms&parent_terms)/max(1,len(union))
+        novelty=len(target_terms-parent_terms)/max(1,len(target_terms))
+        hub=self.cfg.hub_penalty*(self.degree[target]/self.max_degree); cost=self.cfg.traversal_cost_weight
+        score=(legal+self.cfg.relevance_weight*relevance+self.cfg.authority_weight*authority+
+          self.cfg.temporal_weight*temporal+self.cfg.gap_weight*gap+self.cfg.novelty_weight*novelty-
+          self.cfg.redundancy_weight*redundancy-hub-cost)
+        return score,{'graph':score,'legal_importance':legal,'relevance':relevance,'authority':authority,
+          'temporal':temporal,'gap_contribution':gap,'novelty':novelty,'redundancy':redundancy,
+          'hub_penalty':hub,'traversal_cost':cost,'direction_out':float(direction=='OUT')}

@@ -1,0 +1,76 @@
+{
+  "MR002": {
+    "public_result_identical": true,
+    "graph_on_judge": {
+      "status": "AI_JUDGED",
+      "model": {
+        "provider": "gemini",
+        "model": "gemini-3.5-flash-lite",
+        "temperature": 0,
+        "max_output_tokens": 2048,
+        "context_tokens": 32768
+      },
+      "correctness": 1,
+      "completeness": 0,
+      "evidence_support": 0,
+      "relevance": 1,
+      "temporal_application": 1,
+      "reason": "The answering agent failed to provide an answer despite the question being clearly answerable with the provided reference source. However, the evaluation framework requires grading the actual response, which missed the correct legal conclusion completely due to a failure to generate an answer.",
+      "task_scores": []
+    },
+    "graph_off_judge": {
+      "status": "AI_JUDGED",
+      "model": {
+        "provider": "gemini",
+        "model": "gemini-3.5-flash-lite",
+        "temperature": 0,
+        "max_output_tokens": 2048,
+        "context_tokens": 32768
+      },
+      "correctness": 0,
+      "completeness": 0,
+      "evidence_support": 0,
+      "relevance": 1,
+      "temporal_application": 1,
+      "reason": "The answer incorrectly claims it cannot generate a verified answer, failing to provide the correct response available in the reference (Article 122.2 of the Labour Code), which clearly states that multiple disciplinary measures cannot be applied for a single violation.",
+      "task_scores": []
+    }
+  },
+  "TD003": {
+    "public_result_identical": true,
+    "graph_on_judge": {
+      "status": "AI_JUDGED",
+      "model": {
+        "provider": "gemini",
+        "model": "gemini-3.5-flash-lite",
+        "temperature": 0,
+        "max_output_tokens": 2048,
+        "context_tokens": 32768
+      },
+      "correctness": 0.5,
+      "completeness": 0.4,
+      "evidence_support": 0.0,
+      "relevance": 1.0,
+      "temporal_application": 1.0,
+      "reason": "The answer correctly identifies that more facts are needed, matching the expected disposition. However, it is extremely brief and fails to provide any substantive explanation or outline the missing facts requested in the evaluation criteria, such as separating overtime, bonuses, regional location, and normal working hours.",
+      "task_scores": []
+    },
+    "graph_off_judge": {
+      "status": "AI_JUDGED",
+      "model": {
+        "provider": "gemini",
+        "model": "gemini-3.5-flash-lite",
+        "temperature": 0,
+        "max_output_tokens": 2048,
+        "context_tokens": 32768
+      },
+      "correctness": 1.0,
+      "completeness": 1.0,
+      "evidence_support": 1.0,
+      "relevance": 1.0,
+      "temporal_application": 1.0,
+      "reason": "The answering agent correctly identified that more facts are needed and asked appropriate clarification questions regarding the missing details (such as working hours, exact breakdown of income, and location/region) required to verify compliance with the minimum wage under Articles 90 and 91 of the Labour Code.",
+      "task_scores": []
+    }
+  }
+}

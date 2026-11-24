@@ -1,0 +1,448 @@
+"""Generate the manual Kaggle ONLINE notebook. Does not install or start services."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+from pathlib import Path
+from textwrap import dedent
+
+
+def make_notebook(gemini_model='gemini-3.5-flash-lite'):
+    if not isinstance(gemini_model,str) or not re.fullmatch(r'(?:models/)?gemini-[A-Za-z0-9._-]{1,100}',gemini_model):
+        raise ValueError('Invalid Gemini model identifier; credentials do not belong here.')
+    cells=[]
+    def add(kind,name,value):
+        cell={'cell_type':kind,'id':'online-'+str(len(cells)).zfill(2),
+              'metadata':{'name':name},'source':dedent(value).strip().splitlines(keepends=True)}
+        if kind=='code': cell.update(execution_count=None,outputs=[])
+        cells.append(cell)
+
+    add('markdown','instructions',r'''
+    # Pháp Điển AI — ONLINE backend trên Kaggle
+
+    Trước khi Run All, kiểm tra trong Kaggle:
+    - **Internet ON**, **GPU T4 x2**. Notebook không tự cấp GPU hay thêm Input/Secrets.
+    - **Add Input** một dataset kết quả OFFLINE cuối đã kiểm tra kỹ thuật đạt.
+      Tên dataset và tên ZIP có thể thay đổi; nhận diện bằng cấu trúc bên trong,
+      dạng ZIP hoặc thư mục `artifacts/` đã giải nén. Không cần sửa tên trong code.
+      Không cần package OFFLINE, technical checkpoint hoặc PDF thô.
+    - Bật quyền dùng Secrets **GEMINI_API_KEY**, **VN_LABOR_API_KEY**, **NGROK_AUTHTOKEN**;
+      **HF_TOKEN** là tùy chọn. Không dán key vào code.
+
+    Chạy Run All ở phiên tương tác. Cell cuối **tiếp tục chạy là bình thường**:
+    nó giữ backend và tunnel sống, hiện `VITE_BACKEND_TARGET=https://...` khi sẵn sàng.
+    Dừng cell sẽ dừng server. Không coi Run All & Save đã hoàn tất là server còn chạy.
+    Sau khi có URL, cập nhật `src/online/frontend/.env` ở máy local nếu URL đổi rồi khởi động Vite.
+    Mã và model giữ cache khi chạy lại cùng phiên; không xóa thư mục repo/cache.
+    ''')
+    add('code','settings',r'''
+    from pathlib import Path
+    ROOT = Path('/kaggle/working/legal-agentic-rag')
+    REPO_URL = 'https://github.com/tvqui/legal-agentic-rag.git'
+    BRANCH = 'main'
+    INPUT_ROOT = Path('/kaggle/input')
+    # Tự nhận diện, không phụ thuộc tên dataset/ZIP. Nếu có nhiều kết quả cuối,
+    # đặt ARTIFACT thành đường dẫn ZIP hoặc thư mục dữ liệu muốn dùng trong /kaggle/input.
+    ARTIFACT = ''
+    GEMINI_MODEL = 'gemini-3.5-flash-lite'  # model bạn đang sử dụng
+    OLLAMA_MODEL = 'qwen3:8b'
+    GEMINI_RPM = 13
+    GEMINI_PROBE_TIMEOUT_SECONDS = 60  # chỉ probe khởi động; mỗi câu hỏi vẫn có ngân sách riêng
+    READY_TIMEOUT_SECONDS = 240
+    CONFIG = Path('/kaggle/working/online_pinned.yaml')
+    WORKING = Path('/kaggle/working/vn_labor_online')
+    PYTHON = Path('/tmp/vn_labor_online_env/bin/python')
+    NOTEBOOK_VALIDATED = False
+    '''.replace("GEMINI_MODEL = 'gemini-3.5-flash-lite'",f'GEMINI_MODEL = {gemini_model!r}'))
+    add('code','helpers',r'''
+    import importlib.metadata
+    import json
+    import os
+    import queue
+    import re
+    import shutil
+    import signal
+    import socket
+    import subprocess
+    import sys
+    import threading
+    import time
+    import urllib.request
+    import zipfile
+
+    def redact(value):
+        text = str(value)
+        for name in ('GEMINI_API_KEY','VN_LABOR_RESEARCHER_API_KEY','VN_LABOR_API_KEY',
+                     'NGROK_AUTHTOKEN','HF_TOKEN'):
+            secret = os.getenv(name,'')
+            if secret: text = text.replace(secret,'[REDACTED]')
+        return text
+
+    def stop_owned(process):
+        if process.poll() is not None: return
+        try:
+            os.killpg(process.pid,signal.SIGINT)
+            process.wait(timeout=30)
+        except ProcessLookupError:
+            return
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try: process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill(); process.wait(timeout=5)
+
+    def log_tail(path,limit=12000):
+        if not path.is_file(): return '(chưa tạo log)'
+        with path.open('rb') as stream:
+            stream.seek(max(0,path.stat().st_size-limit))
+            return redact(stream.read(limit).decode('utf-8',errors='replace'))
+
+    def run_step(arguments,name,timeout=300,cwd=None,on_line=None):
+        logs=WORKING/'notebook_logs'; logs.mkdir(parents=True,exist_ok=True)
+        path=logs/(name+'.log')
+        print(f'BẮT ĐẦU: {name}; log: {path}',flush=True)
+        process=subprocess.Popen(list(map(str,arguments)),cwd=cwd,stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,text=True,encoding='utf-8',errors='replace',
+            bufsize=1,start_new_session=True)
+        events=queue.Queue()
+        def read_output():
+            try:
+                for line in process.stdout: events.put(line)
+            finally: events.put(None)
+        reader=threading.Thread(target=read_output,daemon=True); reader.start()
+        started=heartbeat=time.monotonic(); eof=False
+        try:
+            with path.open('a',encoding='utf-8') as log:
+                while not eof or process.poll() is None:
+                    now=time.monotonic()
+                    if timeout is not None and now-started>timeout:
+                        raise TimeoutError(f'{name} vượt {timeout} giây; xem {path}')
+                    try:
+                        line=events.get(timeout=1)
+                        if line is None: eof=True
+                        else:
+                            safe=redact(line); print(safe,end='',flush=True); log.write(safe); log.flush()
+                            if on_line: on_line(line.strip())
+                    except queue.Empty: pass
+                    if now-heartbeat>=30:
+                        print(f'{name}: tiến trình còn chạy, đã {int(now-started)} giây.',flush=True)
+                        heartbeat=now
+                if process.returncode:
+                    raise RuntimeError(f'{name} thất bại, exit={process.returncode}; xem {path}')
+        finally:
+            stop_owned(process)
+            reader.join(timeout=2)
+            process.stdout.close()
+
+    def assert_ports_free(ports=(8000,11434)):
+        busy=[]
+        for port in ports:
+            with socket.socket() as connection:
+                connection.settimeout(.3)
+                if connection.connect_ex(('127.0.0.1',port))==0: busy.append(port)
+        if busy:
+            raise RuntimeError('Đang có service cũ ở cổng '+str(busy)+
+                '. Dừng cell backend cũ hoặc Restart Session; không tự kill process không rõ chủ.')
+
+    def select_artifact(input_root,explicit=''):
+        root=Path(input_root).resolve()
+        required=('05_graph/nodes.jsonl','05_graph/edges.jsonl','06_indexes/retrieval_units.jsonl',
+                  'reports/dense_validation.json','reports/neo4j_validation.json')
+        project=globals().get('ROOT')
+        if project is not None and (Path(project)/'src').is_dir():
+            sys.path.insert(0,str(Path(project)/'src/offline/src'))
+        from vn_labor_offline.artifact_layout import runtime_name,resolve_path
+        marker_name='reports/final_outputs_validation.json'
+        def complete(report):
+            return (isinstance(report,dict) and isinstance(report.get('stages'),dict)
+                    and all(report['stages'].get(k) is True
+                            for k in ('registry','structure','graph','indexes')))
+        def final_directory(target):
+            parent=target/'artifacts' if (target/'artifacts').is_dir() else target
+            try:
+                marker=resolve_path(parent,marker_name)
+                if marker.stat().st_size>1024*1024: return False
+                report=json.loads(marker.read_text(encoding='utf-8-sig'))
+                return complete(report) and all(resolve_path(parent,name).is_file() for name in required)
+            except (OSError,ValueError): return False
+        def final_archive(target):
+            # Inspect only a small report here. Pinning later verifies CRC, paths,
+            # graph, index alignment and fingerprints before any inference runs.
+            try:
+                with zipfile.ZipFile(target) as archive:
+                    names=archive.namelist()
+                    if len(names)!=len(set(names)): return False
+                    roots=[(prefix,layout) for prefix in ('','artifacts/') for layout in (False,True) if prefix+(runtime_name(marker_name) if layout else marker_name) in names]
+                    if len(roots)!=1: return False
+                    prefix,layout=roots[0]; physical=lambda n: runtime_name(n) if layout else n
+                    marker=archive.getinfo(prefix+physical(marker_name))
+                    if marker.file_size>1024*1024: return False
+                    report=json.loads(archive.read(marker).decode('utf-8-sig'))
+                    return (complete(report) and all(prefix+physical(name) in names for name in required))
+            except (OSError,ValueError,RuntimeError,zipfile.BadZipFile): return False
+        if explicit:
+            target=Path(explicit).expanduser().resolve()
+            if not target.exists() or not target.is_relative_to(root):
+                raise RuntimeError('ARTIFACT phải là path tồn tại trong Kaggle Input.')
+            if not (final_directory(target) if target.is_dir() else final_archive(target)):
+                raise RuntimeError('ARTIFACT không phải kết quả OFFLINE cuối đầy đủ; kiểm tra cấu trúc và validation.')
+            return target
+        archives={p.resolve() for p in root.rglob('*')
+                  if p.is_file() and p.suffix.lower()=='.zip' and final_archive(p)}
+        directories=set()
+        for marker in list(root.rglob('reports/final_outputs_validation.json'))+list(root.rglob('checks/final_outputs_validation.json')):
+            parent=marker.parent.parent
+            if final_directory(parent):
+                directories.add(parent.resolve())
+        candidates=sorted(archives|directories)
+        if len(candidates)!=1:
+            raise RuntimeError('Cần đúng một kết quả cuối; tìm thấy '+str(len(candidates))+
+                '. Chỉ gắn một kết quả OFFLINE cuối hoặc đặt ARTIFACT rõ ràng: '+str(candidates))
+        return candidates[0]
+
+    def assert_release(pin,effective):
+        pairs=(('build_id','expected_build_id'),('retrieval_unit_fingerprint','expected_retrieval_unit_fingerprint'),
+               ('dense_fingerprint','expected_dense_fingerprint'))
+        for found,expected in pairs:
+            if not effective.get(expected):
+                raise RuntimeError('Config release thiếu fingerprint bắt buộc: '+expected)
+            if pin.get(found)!=effective[expected]:
+                raise RuntimeError('Dữ liệu không khớp cấu hình vừa pin: '+found+
+                    '. Chạy lại cell pin với Input đã chọn; không bỏ kiểm fingerprint.')
+        if pin.get('archive_sha256')!=effective.get('expected_archive_sha256'):
+            raise RuntimeError('SHA-256 của ZIP không khớp cấu hình vừa pin.')
+        if pin.get('compatible') is not True: raise RuntimeError('Artifact không tương thích kỹ thuật.')
+
+    def backend_line(line):
+        prefix='REMOTE_BACKEND_URL='
+        if line.startswith(prefix):
+            url=line[len(prefix):].strip()
+            if not url.startswith('https://'): raise RuntimeError('Tunnel không trả URL HTTPS.')
+            (WORKING/'remote_backend_url.txt').write_text(url+'\n',encoding='utf-8')
+            print('\nDán dòng sau vào src/online/frontend/.env ở máy local:\nVITE_BACKEND_TARGET='+url,flush=True)
+            print('Giữ BACKEND_PROXY_TOKEN khớp VN_LABOR_API_KEY; không đưa token vào VITE_*.',flush=True)
+    ''')
+    add('markdown','prerequisites',r'''
+    ## 1. Kiểm GPU, Internet, Input và Secrets trước khi cài model
+    Nếu dừng ở đây, sửa Settings/Add Input/Secrets rồi chạy lại. Không cần OCR hay chạy OFFLINE.
+    ''')
+    add('code','preflight',r'''
+    NOTEBOOK_VALIDATED=False
+    if not ((3,12)<=sys.version_info[:2]<(3,14)):
+        raise RuntimeError('Dự án hỗ trợ Python 3.12 hoặc 3.13.')
+    if sys.platform!='linux' or not INPUT_ROOT.is_dir():
+        raise RuntimeError('Notebook này cần chạy trong Kaggle Linux.')
+    if not shutil.which('nvidia-smi'):
+        raise RuntimeError('Chưa bật GPU. Chọn Settings → Accelerator → GPU T4 x2.')
+    gpu=subprocess.run(['nvidia-smi','--query-gpu=name','--format=csv,noheader'],
+        capture_output=True,text=True,check=True,timeout=20)
+    gpus=[line.strip() for line in gpu.stdout.splitlines() if line.strip()]
+    if not gpus: raise RuntimeError('Không có GPU được cấp cho phiên này.')
+    print('GPU:',gpus,flush=True)
+    if len(gpus)<2: print('Chỉ có một GPU: Dense/reranker và Ollama sẽ dùng chung GPU.',flush=True)
+    assert_ports_free()
+    try:
+        with urllib.request.urlopen('https://github.com/tvqui/legal-agentic-rag',timeout=20) as response:
+            if response.status!=200: raise RuntimeError('GitHub unavailable')
+    except Exception as exc:
+        raise RuntimeError('Không truy cập được GitHub. Kiểm tra Internet ON; lỗi: '+type(exc).__name__) from None
+    ARTIFACT_PATH=select_artifact(INPUT_ROOT,ARTIFACT)
+    print('Input đã chọn:',ARTIFACT_PATH,flush=True)
+    from kaggle_secrets import UserSecretsClient
+    client=UserSecretsClient(); missing=[]
+    for name in ('GEMINI_API_KEY','VN_LABOR_API_KEY','NGROK_AUTHTOKEN','HF_TOKEN'):
+        try: value=client.get_secret(name).strip()
+        except Exception: value=''
+        if not value and name!='HF_TOKEN': missing.append(name)
+        if value: os.environ[name]=value
+        elif name in os.environ: os.environ.pop(name)
+        print(name+(': OK' if value else ': chưa cấu hình'),flush=True)
+    value=''
+    if missing: raise RuntimeError('Thiếu/quên cấp quyền Secrets: '+', '.join(missing))
+    if len(os.environ['VN_LABOR_API_KEY'])<32:
+        raise RuntimeError('VN_LABOR_API_KEY cần có ít nhất 32 ký tự ngẫu nhiên.')
+    os.environ.update({
+        'GEMINI_MODEL':GEMINI_MODEL,'VN_LABOR_RESEARCHER_MODE':'gemini',
+        'VN_LABOR_RESEARCHER_API_KEY':os.environ['GEMINI_API_KEY'],
+        'VN_LABOR_ADJUDICATION_REVIEW_PROVIDER':'gemini',
+        'VN_LABOR_ADJUDICATION_REVIEW_MODEL':GEMINI_MODEL,
+        'VN_LABOR_GEMINI_RPM':str(GEMINI_RPM),'VN_LABOR_GEMINI_RATE_RETRIES':'2',
+        'VN_LABOR_GEMINI_RATE_MAX_WAIT_SECONDS':'70',
+        'VN_LABOR_GEMINI_PROBE_TIMEOUT_SECONDS':str(globals().get('GEMINI_PROBE_TIMEOUT_SECONDS',60)),
+        'VN_LABOR_APPLICABILITY_MODE':'hybrid','VN_LABOR_APPLICABILITY_PROVIDER':'ollama',
+        'VN_LABOR_ADJUDICATION_MODE':'ollama','VN_LABOR_REQUEST_TIMEOUT_SECONDS':'180',
+        'VN_LABOR_MAX_CONCURRENT_ANSWERS':'1','TOKENIZERS_PARALLELISM':'false',
+    })
+    for role in ('APPLICABILITY','ADJUDICATION'):
+        os.environ['VN_LABOR_'+role+'_MODEL']=OLLAMA_MODEL
+        os.environ['VN_LABOR_'+role+'_URL']='http://127.0.0.1:11434/api/chat'
+        os.environ['VN_LABOR_'+role+'_HEALTH_URL']='http://127.0.0.1:11434/api/tags'
+    print('Preflight GPU/Internet/Input/Secrets: PASS',flush=True)
+    ''')
+    add('markdown','setup_description',r'''
+    ## 2. Cập nhật main và cài môi trường riêng
+    Cài `zstd` một lần. Môi trường Python riêng tái sử dụng Torch/CUDA có sẵn của Kaggle,
+    ràng buộc đúng phiên bản Torch để tránh pip tự đổi sang bản khác. Nếu repo có sửa
+    tracked file chưa lưu, notebook dừng; không reset/xóa code hoặc model cache.
+    ''')
+    add('code','setup',r'''
+    NOTEBOOK_VALIDATED=False
+    # Tương đương: !apt-get update -y ; !apt-get install -y git curl zstd
+    run_step(['apt-get','update','-y'],'apt_update',timeout=300)
+    run_step(['apt-get','install','-y','git','curl','zstd'],'apt_install',timeout=300)
+    if not ROOT.exists():
+        run_step(['git','clone','--branch',BRANCH,'--single-branch',REPO_URL,ROOT],
+                 'git_clone',timeout=300)
+    elif not (ROOT/'.git').exists():
+        raise RuntimeError('ROOT tồn tại nhưng không phải repository; kiểm tra path trước khi chạy lại.')
+    origin=subprocess.check_output(['git','remote','get-url','origin'],cwd=ROOT,text=True,timeout=20).strip()
+    if origin.rstrip('/').removesuffix('.git')!=REPO_URL.rstrip('/').removesuffix('.git'):
+        raise RuntimeError('origin của ROOT không đúng repo dự án; không cập nhật nhầm repo.')
+    dirty=subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],cwd=ROOT,text=True,timeout=20)
+    if dirty.strip(): raise RuntimeError('Repo có tracked file đã sửa; lưu thay đổi trước khi cập nhật.')
+    run_step(['git','fetch','--prune','origin','+refs/heads/'+BRANCH+':refs/remotes/origin/'+BRANCH],
+             'git_fetch',timeout=300,cwd=ROOT)
+    run_step(['git','checkout','--detach','origin/'+BRANCH],'git_checkout',cwd=ROOT)
+    COMMIT_USED=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True,timeout=20).strip()
+    print('Commit đang dùng:',COMMIT_USED,flush=True)
+    api_source=(ROOT/'src/online/backend/src/vn_labor_online/api.py').read_text(encoding='utf-8')
+    if 'diagnostic-probe-v2' not in api_source or not (ROOT/'src/online/backend/kaggle/check_gemini.py').is_file():
+        raise RuntimeError('main chưa có bản sửa Gemini readiness. Push code local rồi chạy lại cell này.')
+    if not (ROOT/'src/online/backend/src/vn_labor_online/gemini_diagnostics.py').is_file():
+        raise RuntimeError('main chưa có chẩn đoán lỗi Gemini; push bản sửa rồi cập nhật lại.')
+    if '--probe-timeout' not in (ROOT/'src/online/backend/kaggle/check_gemini.py').read_text(encoding='utf-8'):
+        raise RuntimeError('main chưa có probe timeout cấu hình được; push bản sửa mới rồi cập nhật lại.')
+    constraints=[]
+    for package in ('torch','torchvision','torchaudio'):
+        try: constraints.append(package+'=='+importlib.metadata.version(package))
+        except importlib.metadata.PackageNotFoundError:
+            if package=='torch': raise RuntimeError('Kaggle image chưa có Torch; kiểm tra GPU runtime.')
+    WORKING.mkdir(parents=True,exist_ok=True)
+    constraint_file=WORKING/'torch_constraints.txt'
+    constraint_file.write_text('\n'.join(constraints)+'\n',encoding='utf-8')
+    run_step([sys.executable,'-m','venv','--system-site-packages','--without-pip',PYTHON.parent.parent],
+             'python_env',timeout=120)
+    run_step([sys.executable,'-m','pip','--python',PYTHON,'install','--disable-pip-version-check',
+              '-c',constraint_file,'-e',str(ROOT)+'[retrieval,online]','ngrok'],
+             'python_dependencies',timeout=1800,cwd=ROOT)
+    if shutil.which('ollama') is None:
+        installer=WORKING/'ollama-install.sh'
+        run_step(['curl','-fsSL','--retry','2','--connect-timeout','20',
+                  'https://ollama.com/install.sh','-o',installer],'ollama_installer',timeout=180)
+        run_step(['sh',installer],'ollama_install',timeout=900)
+    if not shutil.which('ollama'): raise RuntimeError('Chưa cài được Ollama.')
+    check=('import torch,FlagEmbedding,faiss,fastapi,google.genai,jsonschema,ngrok; '
+           'assert torch.cuda.is_available(), "Torch không thấy CUDA"; '
+           'print("Python dependencies/CUDA: PASS; GPU count:",torch.cuda.device_count())')
+    run_step([PYTHON,'-c',check],'dependency_check',timeout=120,cwd=ROOT)
+    ''')
+    add('markdown','pin_description',r'''
+    ## 3. Kiểm dữ liệu đã chọn và tạo cấu hình cố định cho phiên chạy
+    Cấu hình gốc cung cấp tham số ONLINE. Script pin kiểm tính tương thích của Input rồi
+    ghi đường dẫn, build, retrieval/dense fingerprint và SHA-256 ZIP vào cấu hình mới.
+    Các mã phải khớp cấu hình vừa tạo, không so với mã của bộ dữ liệu cũ trong cấu hình gốc.
+    Đổi tên dataset không cần sửa code. Đổi nội dung thì phải pin lại bằng Run All.
+    Đây là kiểm tra kỹ thuật; human review chưa duyệt vẫn là PROVISIONAL.
+    ''')
+    add('code','pin_config',r'''
+    NOTEBOOK_VALIDATED=False
+    pin_lines=[]
+    run_step([PYTHON,'src/online/backend/scripts/pin_online_artifact.py','--artifact',ARTIFACT_PATH,
+              '--base-config','src/online/backend/config/online_kaggle.yaml','--output',CONFIG,'--force'],
+             'pin_artifact',timeout=300,cwd=ROOT,on_line=pin_lines.append)
+    pin_report=json.loads('\n'.join(pin_lines))
+    inspect=r"""
+    import json,sys
+    from pathlib import Path
+    from vn_labor_online.config import load_config
+    selected=load_config(Path(sys.argv[1]))
+    print(json.dumps({'artifact_source':selected.artifact_source,
+      'selected':{'expected_build_id':selected.expected_build_id,
+      'expected_retrieval_unit_fingerprint':selected.expected_retrieval_unit_fingerprint,
+      'expected_dense_fingerprint':selected.expected_dense_fingerprint,
+      'expected_archive_sha256':selected.expected_archive_sha256},
+      'profile':{'researcher':selected.researcher.mode,'reviewer':selected.adjudication.review_provider,
+      'semantic_review':selected.adjudication.semantic_review,'applicability':selected.applicability.mode,
+      'adjudication':selected.adjudication.mode,'dense':selected.retrieval.dense_enabled,
+      'bm25':selected.retrieval.bm25_enabled,'reranker':selected.reranker.enabled,'graph':selected.graph.enabled,
+      'researcher_model':selected.researcher.model,'reviewer_model':selected.adjudication.review_model}}))
+    """
+    from textwrap import dedent
+    raw=subprocess.check_output([str(PYTHON),'-c',dedent(inspect),str(CONFIG)],cwd=ROOT,text=True,timeout=30)
+    effective=json.loads(raw)
+    assert_release(pin_report,effective['selected'])
+    if Path(effective['artifact_source']).resolve()!=Path(ARTIFACT_PATH).resolve():
+        raise RuntimeError('Cấu hình thực tế đang trỏ sang Input khác. Kiểm tra VN_LABOR_ARTIFACT_SOURCE.')
+    profile=effective['profile']
+    if not (profile['researcher']=='gemini' and profile['reviewer']=='gemini' and profile['semantic_review']
+            and profile['applicability']=='hybrid' and profile['adjudication']=='ollama'
+            and all(profile[name] for name in ('dense','bm25','reranker','graph'))):
+        raise RuntimeError('Profile thực tế không đúng cấu hình đầy đủ của notebook.')
+    if profile['researcher_model']!=GEMINI_MODEL or profile['reviewer_model']!=GEMINI_MODEL:
+        raise RuntimeError('Model thực tế của Researcher/reviewer không khớp GEMINI_MODEL đã chọn.')
+    print('Effective ONLINE profile:',json.dumps(profile,ensure_ascii=False),flush=True)
+    print('Pinned build:',pin_report['build_id'],flush=True)
+    ''')
+    add('markdown','gemini_description',r'''
+    ## 4. Kiểm Gemini trước khi tải BGE/Qwen
+    Đây là probe kết nối nhỏ, không chứng nhận câu trả lời pháp lý đúng. Nếu lỗi, mã lỗi
+    được in an toàn; sửa Secrets/model/quota rồi chạy lại từ cell cần thiết.
+    Cho phép tối đa 60 giây cho probe cold start. Lỗi 400 sẽ có thêm chẩn đoán plain probe,
+    không tự đổi model, bỏ JSON hay coi lỗi là PASS. Nếu timeout, không chạy tiếp backend.
+    Không chạy notebook/benchmark khác dùng cùng quota trong lúc kiểm.
+    ''')
+    add('code','gemini_check',r'''
+    NOTEBOOK_VALIDATED=False
+    run_step([PYTHON,'-u','src/online/backend/kaggle/check_gemini.py','--config',CONFIG,'--model',GEMINI_MODEL,
+              '--probe-timeout',str(globals().get('GEMINI_PROBE_TIMEOUT_SECONDS',60)),'--diagnose'],
+             'gemini_check',timeout=120,cwd=ROOT)
+    NOTEBOOK_VALIDATED=True
+    print('Các bước chuẩn bị đã đạt. Cell tiếp theo sẽ giữ backend chạy.',flush=True)
+    ''')
+    add('markdown','serve_description',r'''
+    ## 5. Khởi động backend — giữ cell này chạy
+    Chờ `VITE_BACKEND_TARGET=https://...`. Log setup nằm ở
+    `/kaggle/working/vn_labor_online/notebook_logs/`; log dịch vụ ở `logs/backend.log`
+    và `logs/ollama.log`. Khi lỗi/dừng, notebook tự hiện phần log cuối đã che key.
+    Không có cell chẩn đoán bắt buộc ở sau cell chạy liên tục này.
+    ''')
+    add('code','backend',r'''
+    if not NOTEBOOK_VALIDATED: raise RuntimeError('Chưa chạy thành công các cell chuẩn bị và kiểm Gemini.')
+    assert_ports_free()
+    try:
+        run_step([PYTHON,'-u','src/online/backend/kaggle/online_remote.py','--artifact',ARTIFACT_PATH,
+                  '--config',CONFIG,'--model',OLLAMA_MODEL,'--ready-timeout',READY_TIMEOUT_SECONDS],
+                 'backend',timeout=None,cwd=ROOT,on_line=backend_line)
+    finally:
+        for name in ('backend.log','ollama.log'):
+            print('\nLOG '+name+' (đã che key):\n'+log_tail(WORKING/'logs'/name),flush=True)
+    ''')
+    notebook={'cells':cells,'metadata':{'kernelspec':{'display_name':'Python 3','language':'python','name':'python3'},
+        'language_info':{'name':'python'},'vn_labor':{'workflow':'ONLINE_KAGGLE_GEMINI_PACED_V1',
+        'required_settings':{'internet':True,'recommended_gpu':'T4 x2','dataset':'one-compatible-offline-result'},
+        'artifact_selection':'content-structure-v2','artifact_pinning':'selected-build-v2'}},
+        'nbformat':4,'nbformat_minor':5}
+    for cell in cells:
+        if cell['cell_type']=='code': compile(''.join(cell['source']),cell['metadata']['name'],'exec')
+    return notebook
+
+
+def write_notebook(path:Path,gemini_model='gemini-3.5-flash-lite'):
+    path.parent.mkdir(parents=True,exist_ok=True)
+    payload=json.dumps(make_notebook(gemini_model),ensure_ascii=False,indent=2)+'\n'
+    data=payload.encode('utf-8')
+    path.write_bytes(data)
+    sha=hashlib.sha256(data).hexdigest()
+    Path(str(path)+'.sha256').write_text(sha+'  '+path.name+'\n',encoding='ascii')
+    return {'notebook':str(path),'sha256':sha,'code_syntax':'PASS','secrets_included':False,
+            'remote_execution_tested':False}
+
+
+if __name__=='__main__':
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output',type=Path,default=Path(__file__).with_name('ONLINE_Backend.ipynb'))
+    parser.add_argument('--gemini-model',default='gemini-3.5-flash-lite')
+    args=parser.parse_args()
+    print(json.dumps(write_notebook(args.output,args.gemini_model),ensure_ascii=False))

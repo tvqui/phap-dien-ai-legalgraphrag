@@ -1,0 +1,171 @@
+from __future__ import annotations
+from pathlib import Path
+import os
+from typing import Literal
+import yaml
+from pydantic import BaseModel,ConfigDict,Field,field_validator
+
+class StrictModel(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+
+class RetrievalConfig(StrictModel):
+    # Experimental: keep off until its benefit is measured for this workload.
+    request_cache_enabled:bool=False
+    profile_fast_path:bool=True
+    exception_context_top_k:int=Field(8,ge=0,le=32)
+    exact_lookup:bool=True; bm25_enabled:bool=True; bm25_top_k:int=Field(30,ge=1); dense_enabled:bool=True
+    dense_top_k:int=Field(30,ge=1); issue_anchor_enabled:bool=True; issue_anchor_top_k:int=Field(20,ge=1)
+    case_law_enabled:bool=True; case_law_top_k:int=Field(10,ge=1)
+    community_enabled:bool=True; community_top_k:int=Field(3,ge=1,le=20)
+    community_case_top_k:int=Field(10,ge=1,le=50)
+    fusion_top_k:int=Field(30,ge=1); rrf_k:int=Field(60,ge=1)
+    # Fixed-graph experiments preserve the hybrid head and append novel sources
+    # for the semantic selector. Weighted raw-channel RRF remains an explicit
+    # experiment; graph proximity is not independent semantic relevance.
+    # Adaptive ONLINE traversal keeps its existing gap-driven policy.
+    graph_fusion_mode:Literal['candidate_union','weighted_rrf']='candidate_union'
+    graph_fusion_weight:float=Field(.5,ge=0,le=2); graph_max_additions:int=Field(10,ge=0,le=50)
+    # Opt-in fixed-retrieval experiment controls. Adaptive ONLINE evidence
+    # planning remains gap-driven and does not silently inherit these gates.
+    graph_query_gate:Literal['always','reference_intent']='always'
+    graph_reference_selection:bool=False
+    graph_reference_head_k:int=Field(10,ge=1,le=100)
+    graph_reference_max_promotions:int|None=Field(None,ge=0,le=99)
+    relevance_weight:float=Field(.75,ge=0); authority_weight:float=Field(.2,ge=0); temporal_weight:float=Field(.05,ge=0)
+
+class RerankerConfig(StrictModel):
+    enabled:bool=False; model:str='BAAI/bge-reranker-v2-m3'; model_path:str|None=None
+    device:str='auto'; use_fp16:bool=True; top_n:int=Field(30,ge=1,le=100)
+    # FlagEmbedding defaults to 512 tokens, which truncates long Vietnamese
+    # provisions. A larger cap reduces truncation, but is NOT a completeness
+    # guarantee: very long sources can still exceed this model input budget.
+    max_length:int=Field(1024,ge=128,le=8192)
+    # Blend of the cross-encoder score with the first-stage RRF rank prior.
+    # 0 = pure cross-encoder (previous behaviour). Tune by ablation, not by eye.
+    first_stage_weight:float=Field(0.0,ge=0,le=1)
+
+class GraphConfig(StrictModel):
+    enabled:bool=True; mode:Literal['adaptive','fixed']='adaptive'
+    max_rounds:int=Field(2,ge=0,le=6); max_nodes:int=Field(15,ge=1,le=100); max_edges:int=Field(40,ge=0,le=400); max_hops:int=Field(2,ge=0,le=6)
+    wall_clock_ms:int=Field(1500,ge=1); hub_penalty:float=Field(.15,ge=0)
+    relevance_weight:float=Field(.3,ge=0); authority_weight:float=Field(.15,ge=0); temporal_weight:float=Field(.1,ge=0)
+    gap_weight:float=Field(.5,ge=0); novelty_weight:float=Field(.1,ge=0); redundancy_weight:float=Field(.1,ge=0); traversal_cost_weight:float=Field(.05,ge=0)
+    edge_weights:dict[str,float]=Field(default_factory=lambda:{'AMENDS':1,'REPEALS':1,'REPLACES':1,'IMPLEMENTS':.9,'REFERENCES':.85,'PART_OF':.5,'NEXT':.3,'VERSION_OF':.7,'CITES':.5,'HAS_ISSUE':.4,'RELATES_TO_ISSUE':.4,'SIMILAR_TO':.1,'BELONGS_TO':.1})
+    allowed_relations:list[str]=Field(default_factory=lambda:['AMENDS','REPEALS','REPLACES','IMPLEMENTS','REFERENCES','VERSION_OF','PART_OF','CITES','NEXT','RELATES_TO_ISSUE','HAS_ISSUE','SIMILAR_TO','BELONGS_TO'])
+    @field_validator('edge_weights')
+    @classmethod
+    def validate_edge_weights(cls,value):
+        if any(not key or weight<0 for key,weight in value.items()):
+            raise ValueError('edge_weights require non-empty relation names and non-negative values')
+        return value
+    @field_validator('allowed_relations')
+    @classmethod
+    def validate_allowed_relations(cls,value):
+        if not value: raise ValueError('allowed_relations must not be empty')
+        return list(dict.fromkeys(str(item).strip().upper() for item in value if str(item).strip()))
+
+class ResearcherConfig(StrictModel):
+    adaptive:bool=True
+    max_output_tokens:int=Field(1024,ge=256,le=8192)
+    mode:Literal['deterministic','ollama','http','gemini']='deterministic'
+    url:str|None=None; model:str|None=None; api_key:str|None=None; health_url:str|None=None
+    timeout_seconds:float=120; max_queries:int=Field(2,ge=0,le=4)
+
+class ApplicabilityConfig(StrictModel):
+    minimum_call_seconds:float=Field(0,ge=0,le=120)
+    batch_prompt_tokens:int=Field(0,ge=0,le=65536)
+    context_tokens:int=Field(16384,ge=4096,le=65536)
+    budget_seconds:float=Field(90,ge=1,le=1200)
+    call_timeout_seconds:float=Field(45,ge=1,le=300)
+    reserve_seconds:float=Field(60,ge=0,le=300)
+    unresolved_provider:Literal['none','gemini']='none'
+    unresolved_model:str|None=None
+    unresolved_max_items:int=Field(4,ge=1,le=8)
+    unresolved_timeout_seconds:float=Field(20,ge=1,le=60)
+    tokenizer_path:str|None=None; tokenizer_model:str|None=None
+    max_output_tokens:int=Field(1536,ge=256,le=8192)
+    mode:Literal['deterministic','ollama','http','gemini','hybrid']='deterministic'; fail_closed:bool=True
+    provider:Literal['ollama','http','gemini']='ollama'
+    url:str|None=None; model:str|None=None; api_key:str|None=None; health_url:str|None=None
+    timeout_seconds:float=120; max_items:int=Field(10,ge=1,le=30)
+    max_batches:int=Field(4,ge=1,le=12)
+
+class AdjudicationConfig(StrictModel):
+    minimum_call_seconds:float=Field(0,ge=0,le=120)
+    primary_budget_seconds:float=Field(45,ge=1,le=300)
+    review_reserve_seconds:float=Field(45,ge=0,le=180)
+    recovery_budget_seconds:float=Field(30,ge=0,le=120)
+    tokenizer_path:str|None=None; tokenizer_model:str|None=None
+    review_provider:Literal['same','gemini']='same'
+    review_model:str|None=None
+    review_timeout_seconds:float=Field(45,ge=1,le=180)
+    review_max_output_tokens:int=Field(6144,ge=256,le=8192)
+    semantic_review:bool=True
+    semantic_repair_attempts:int=Field(1,ge=0,le=2)
+    context_tokens:int=Field(16384,ge=4096,le=65536)
+    max_output_tokens:int=Field(2048,ge=256,le=8192)
+    mode:Literal['deterministic','ollama','http','gemini']='deterministic'; fail_closed:bool=True
+    url:str|None=None; model:str|None=None; api_key:str|None=None; health_url:str|None=None; timeout_seconds:float=120
+
+class OnlineConfig(StrictModel):
+    request_timeout_seconds:float=Field(180,ge=5,le=1800)
+    artifact_source:str=Field(min_length=1); cache_dir:str='.cache/online'; expected_build_id:str|None=None
+    expected_archive_sha256:str|None=None; expected_retrieval_unit_fingerprint:str|None=None
+    expected_dense_fingerprint:str|None=None; provisional_mode:bool=True
+    retrieval:RetrievalConfig=Field(default_factory=RetrievalConfig)
+    reranker:RerankerConfig=Field(default_factory=RerankerConfig)
+    graph:GraphConfig=Field(default_factory=GraphConfig)
+    researcher:ResearcherConfig=Field(default_factory=ResearcherConfig)
+    applicability:ApplicabilityConfig=Field(default_factory=ApplicabilityConfig)
+    adjudication:AdjudicationConfig=Field(default_factory=AdjudicationConfig)
+    max_verified_units:int=Field(12,ge=1); minimum_coverage:float=Field(.5,ge=0,le=1); allow_partial:bool=True; trace_dir:str='artifacts/online_traces'
+    answer_while_clarifying:bool=False
+    allow_document_temporal_fallback:bool=True
+    corpus_snapshot_as_of:str|None=None
+    embedding_model:str='BAAI/bge-m3'; embedding_model_path:str|None=None
+    embedding_device:str='auto'; embedding_use_fp16:bool=True
+    @field_validator('corpus_snapshot_as_of')
+    @classmethod
+    def validate_snapshot_date(cls,value):
+        if value is None: return value
+        from datetime import date
+        try: return date.fromisoformat(value).isoformat()
+        except (TypeError,ValueError) as exc: raise ValueError('corpus_snapshot_as_of must use YYYY-MM-DD') from exc
+
+def load_config(path:Path)->OnlineConfig:
+    raw=yaml.safe_load(path.read_text(encoding='utf-8')) or {}
+    values=dict(raw.get('online',raw))
+    if os.getenv('VN_LABOR_ARTIFACT_SOURCE'): values['artifact_source']=os.environ['VN_LABOR_ARTIFACT_SOURCE']
+    if os.getenv('VN_LABOR_ONLINE_CACHE'): values['cache_dir']=os.environ['VN_LABOR_ONLINE_CACHE']
+    if os.getenv('VN_LABOR_REQUEST_TIMEOUT_SECONDS'): values['request_timeout_seconds']=float(os.environ['VN_LABOR_REQUEST_TIMEOUT_SECONDS'])
+    sections=(('researcher','VN_LABOR_RESEARCHER'),('applicability','VN_LABOR_APPLICABILITY'),('adjudication','VN_LABOR_ADJUDICATION'))
+    for section,prefix in sections:
+        configured=dict(values.get(section) or {})
+        for key in ('mode','provider','url','model','api_key','health_url'):
+            env_key=f'{prefix}_{key.upper()}'
+            if os.getenv(env_key): configured[key]=os.environ[env_key]
+        for key in ('timeout_seconds','max_queries','max_items','max_output_tokens'):
+            env_key=f'{prefix}_{key.upper()}'
+            if os.getenv(env_key): configured[key]=float(os.environ[env_key]) if key=='timeout_seconds' else int(os.environ[env_key])
+        if configured: values[section]=configured
+    for section in ('researcher','applicability','adjudication'):
+        configured=values.get(section,{})
+        if configured.get('mode')=='gemini' or (configured.get('mode')=='hybrid' and configured.get('provider')=='gemini'):
+            if not configured.get('api_key'): configured['api_key']=os.getenv('GEMINI_API_KEY')
+            # Role-specific ENV > YAML > shared default. A global model must
+            # not silently replace an explicitly selected role/experiment.
+            original=raw.get('online',raw).get(section,{}) or {}
+            original_provider=original.get('provider') if original.get('mode')=='hybrid' else original.get('mode')
+            switched_provider=original_provider!='gemini'
+            role_model=os.getenv('VN_LABOR_'+section.upper()+'_MODEL')
+            if not configured.get('model') or (switched_provider and not role_model):
+                configured['model']=os.getenv('GEMINI_MODEL')
+    adjudication=dict(values.get('adjudication') or {})
+    for key in ('review_provider','review_model','review_timeout_seconds','review_max_output_tokens'):
+        configured=os.getenv('VN_LABOR_ADJUDICATION_'+key.upper())
+        if configured:
+            if key=='review_timeout_seconds': configured=float(configured)
+            elif key=='review_max_output_tokens': configured=int(configured)
+            adjudication[key]=configured
+    if adjudication: values['adjudication']=adjudication
+    return OnlineConfig.model_validate(values)

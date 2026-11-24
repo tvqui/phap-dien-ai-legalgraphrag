@@ -1,0 +1,45 @@
+{
+  "protocol": "unified-labor-eval-1",
+  "created_utc": "2026-11-22T08:10:55.609097+00:00",
+  "artifact_source": "D:\\data_thô\\legal-agentic-rag\\build\\releases\\runtime_20261118\\vn_labor_online.zip",
+  "cache": "D:\\data_thô\\legal-agentic-rag\\đo\\đo graph\\work\\cache",
+  "corpus_fingerprint": "dd4651c75458afea12116966edc79e08c2456aae38f1edaf8d341e92bb1b3ac5",
+  "artifact_file_hashes": {
+    "06_indexes/retrieval_units.jsonl": "bad744d53f883fd9e8046773997c2d025651b17e4f78525726748611d9a20707",
+    "05_graph/nodes.jsonl": "f5817937f06446199b7e7cb22018942c13e96f5804801aa1fda6dfbac3f6f483",
+    "05_graph/edges.jsonl": "e79f73c8a8ff6e7199e657e93f4ea3e348e7643813c12367e981abb5ad4246b1"
+  },
+  "corpus_jsonl_sha256": "5a0ac783e2d74abf8c15226c4cb8a2eb19eae2ed21df22ecebdc68e1dd827ea1",
+  "questions_sha256": "756ff75765a6f96e570e2cf3c78bfb5e9f3e2ed1ba9f98d613eee2efebd113db",
+  "gold_source_sha256": "26c278386a69160b3c1479e9280253c0a24838e4fe7d3f9830b2a5cb2d55a7c3",
+  "questions": 120,
+  "retrieval_questions": 108,
+  "units": 19144,
+  "label_status": "DRAFT",
+  "embedding_identity": {
+    "model": "BAAI/bge-m3",
+    "revision": "5617a9f61b028005a4858fdac845db406aefb181"
+  },
+  "evaluation_scope": "DEVELOPMENT_NOT_HELD_OUT",
+  "compatibility": {
+    "compatible": true,
+    "build_id": "3e43d1d43b966e8100ba187e69a21fcd8f885b2586a1584b58c428c31851877e",
+    "graph_fingerprint": "3e43d1d43b966e8100ba187e69a21fcd8f885b2586a1584b58c428c31851877e",
+    "retrieval_unit_fingerprint": "dffd4aabc4066e361eca7300921a330a116e2cdb2a59673d94366c6dbd1a38d3",
+    "dense_fingerprint": "ca16358ab8a52c1408f891f31e4dc583c4e4e899eab2bb08bee34b0cc4934513",
+    "gold_build_id": "1373b6543fba3e018edae6c37c2527d58d61a9a7dec7241f95f31fdb1b13bfe8",
+    "issues": [],
+    "provisional_reasons": [
+      "SOURCE_CATALOG_HUMAN_REVIEW_INCOMPLETE",
+      "PROVISION_TEMPORAL_REVIEW_INCOMPLETE",
+      "GOLD_NOT_APPROVED"
+    ],
+    "source_catalog_records": 95,
+    "corpus_snapshot_as_of": null,
+    "technical_compatible": true,
+    "legal_ready": false,
+    "legal_status": "PROVISIONAL",
+    "archive_sha256": "93e0e3a272e141af12476f9b85fba11c72bf3a0bda1c0d5f2403ff9e278eae1c"
+  },
+  "approval_note": "Human metadata is declared, never inferred from a successful run."
+}

@@ -1,0 +1,14 @@
+{
+  "protocol": "graph-mechanism-120-v1",
+  "on_zip_sha256": "cb8ab6d4667d2886b0fed20db4216c55fe933f4db133a277592efa27b0aaf96b",
+  "off_zip_sha256": "71dcbd0f5a6821820286e8e041f4d5643c9a64defc575e8be272a014781e110f",
+  "comparison_key": "2e5e10507379803409bf7e7c3f604ec28726c13c1e6901be7614d597f756b261",
+  "scope": "DEVELOPMENT_NOT_HELD_OUT",
+  "label_status": "DRAFT",
+  "notes": [
+    "AI judge is not legal certification",
+    "Group comparisons are exploratory; no multiplicity-adjusted significance claim",
+    "Missing/errors never treated as zero or PASS",
+    "Graph traversal/citation does not establish exclusive necessity"
+  ]
+}
