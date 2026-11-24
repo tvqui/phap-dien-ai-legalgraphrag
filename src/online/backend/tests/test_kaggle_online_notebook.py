@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -95,6 +96,12 @@ class KaggleOnlineNotebookTests(unittest.TestCase):
         self.assertEqual(args[args.index('--probe-timeout')+1],'60')
         self.assertIn('--diagnose',args)
         self.assertEqual(run.call_args.kwargs['timeout'],120)
+
+    def test_select_artifact_reports_missing_offline_package(self):
+        self.scope['ROOT']=self.root/'stale_checkout'
+        with patch.object(Path,'cwd',return_value=self.root/'cwd_without_project'):
+            with self.assertRaisesRegex(RuntimeError,'Cannot locate vn_labor_offline in the refactored GitHub checkout'):
+                self.scope['select_artifact'](self.root)
 
     def test_select_complete_unpacked_artifact(self):
         expected = self.artifact()
@@ -268,7 +275,7 @@ class KaggleOnlineNotebookTests(unittest.TestCase):
                   'NGROK_AUTHTOKEN':'new-ngrok-token'}
         client = SimpleNamespace(get_secret=lambda name:values.get(name,''))
         fake_kaggle = SimpleNamespace(UserSecretsClient=lambda:client)
-        self.scope.update(sys=SimpleNamespace(platform='linux',version_info=(3,13)),
+        self.scope.update(sys=SimpleNamespace(platform='linux',version_info=(3,13),path=sys.path),
             INPUT_ROOT=self.root, ARTIFACT='', GEMINI_MODEL='chosen-model', GEMINI_RPM=13,
             OLLAMA_MODEL='qwen3:8b', assert_ports_free=Mock(), NOTEBOOK_VALIDATED=True)
         response = Mock(status=200)

@@ -150,9 +150,30 @@ def make_notebook(gemini_model='gemini-3.5-flash-lite'):
         root=Path(input_root).resolve()
         required=('05_graph/nodes.jsonl','05_graph/edges.jsonl','06_indexes/retrieval_units.jsonl',
                   'reports/dense_validation.json','reports/neo4j_validation.json')
-        project=globals().get('ROOT')
-        if project is not None and (Path(project)/'src').is_dir():
-            sys.path.insert(0,str(Path(project)/'src/offline/src'))
+        project_value=globals().get('ROOT')
+        project_candidates=[]
+        if project_value is not None:
+            project_candidates.append(Path(project_value))
+        project_candidates.append(Path.cwd())
+        working=Path('/kaggle/working')
+        if working.is_dir():
+            try: project_candidates.extend(p for p in working.iterdir() if p.is_dir())
+            except OSError: pass
+        offline_source=None
+        checked=[]
+        for candidate in project_candidates:
+            try:
+                candidate=candidate.resolve()
+                source=candidate/'src/offline/src'
+                checked.append(str(source))
+                if (source/'vn_labor_offline/artifact_layout.py').is_file():
+                    offline_source=source
+                    break
+            except OSError: continue
+        if offline_source is None:
+            raise RuntimeError('Cannot locate vn_labor_offline in the refactored GitHub checkout. Checked: '+', '.join(checked)+'. Import the latest notebook and ensure its ROOT points to the cloned project.')
+        source_text=str(offline_source)
+        if source_text not in sys.path: sys.path.insert(0,source_text)
         from vn_labor_offline.artifact_layout import runtime_name,resolve_path
         marker_name='reports/final_outputs_validation.json'
         def complete(report):
