@@ -12,6 +12,7 @@ Dự án gồm quy trình **OFFLINE** để xây dựng/kiểm tra dữ liệu, 
 | Chạy Backend trên Kaggle | [Chạy Backend ONLINE trên Kaggle](#chạy-backend-online-trên-kaggle) | URL Backend tạm thời và log |
 | Dựng dữ liệu từ đầu | [OFFLINE](docs/offline.md), [đóng gói artifact](docs/offline/artifact-layout.md) | vn_labor_online.zip và gói review |
 | Dùng output đã dựng sẵn | `sample_data/vn_labor_online.zip` | Chạy Backend mà không phải chạy lại OFFLINE |
+| Nộp/chạy thử mẫu | [Notebook OFFLINE trên Kaggle](build/submission/offline/VN_Labor_Kaggle_V8.ipynb), [ZIP input mẫu ONLINE](build/submission/online/sample_input/vn_labor_online.zip) | Hai file bàn giao có sẵn sau khi clone |
 | Đo chất lượng | [evaluation/README.md](evaluation/README.md) | Kết quả theo từng phép đo |
 
 ## Cấu trúc repository
@@ -28,7 +29,9 @@ data/                                 Hướng dẫn về dữ liệu; dữ li�
 docs/                                 Kiến trúc và hướng dẫn
 ~~~
 
-Corpus PDF/DOCX, cache dựng trung gian, model weights và API keys không thuộc Git. Repo có kèm một artifact ONLINE đã dựng để dùng nhanh tại `sample_data/vn_labor_online.zip`; không commit `.env`, token hay khóa API.
+Corpus PDF/DOCX, cache dựng trung gian, model weights và API keys không thuộc Git. Repo có kèm một artifact ONLINE đã dựng để dùng nhanh tại `sample_data/vn_labor_online.zip`; hai file bàn giao trong `build/submission/` là ngoại lệ được chọn để đưa vào Git. Các output khác trong `build/` vẫn bị Git bỏ qua. Không commit `.env`, token hay khóa API.
+
+**Sau khi clone:** `build/releases/vn_labor_online.zip` được tạo bằng lệnh copy từ ZIP mẫu ở trên; `build/online_pinned.yaml` được sinh bởi lệnh ghim artifact. `build/kaggle/` chỉ xuất hiện sau `run.bat kaggle` và cần corpus đầu vào. Các thư mục `data/`, `review/attachments/` và `artifacts/` không được đóng gói trong Git: người dùng phải tự cung cấp nguồn được cấu hình rồi chạy pipeline để tạo artifacts. `.env` cũng không được clone; dùng `.env.example` làm mẫu nếu cần cấu hình secret.
 
 ## Chạy ONLINE trên máy local (Windows)
 
@@ -233,7 +236,7 @@ Nếu tiếp tục sau một lần chạy bị ngắt, ưu tiên vn_labor_result
 
 #### C. Import notebook và cài Kaggle Inputs
 
-1. Trong repo, mở build/kaggle/VN_Labor_Kaggle_V8.ipynb. Nếu chưa tạo file này, bước package_kaggle.py ở trên sẽ sinh notebook cùng ZIP.
+1. Trong repo, mở `build/submission/offline/VN_Labor_Kaggle_V8.ipynb`. Bước `package_kaggle.py` ở trên cũng sinh notebook tương đương tại `build/kaggle/VN_Labor_Kaggle_V8.ipynb` cùng ZIP.
 2. Tải file notebook về. Trong Kaggle chọn Code → New Notebook → File → Import Notebook và tải VN_Labor_Kaggle_V8.ipynb lên.
 3. Trong Settings, bật Internet và chọn GPU T4 x2. AI mặc định cần hai GPU: Dense chạy trên GPU 0, Ollama qwen3:8b chạy trên GPU 1. Nếu không chạy AI, hãy đổi cấu hình có chủ đích; đừng bỏ qua preflight GPU.
 4. Trong Input → Add Input → Datasets, gắn đúng hai Dataset: vn-labor-code-corpus-v8 và vn-labor-checkpoint-current. Nếu dùng tên khác, không cần sửa code; notebook nhận diện theo manifest và cấu trúc bên trong.

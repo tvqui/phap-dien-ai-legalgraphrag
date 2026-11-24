@@ -38,3 +38,22 @@ Lần thử chuyển nguyên `docs` bị kiểm duyệt tự động từ chối
 ## Kiểm tra bản stage trước push
 
 Bản stage được xuất sang thư mục riêng và chạy với mã nguồn của chính bản đó. Một số thử nghiệm/kiểm thử truy xuất cũ chưa thuộc phạm vi đóng gói và dọn repository được giữ local, nên số test khác lần chạy toàn bộ thư mục làm việc. Đã phát hiện và sửa Git chuyển LF/CRLF làm lệch SHA của Ontology/correction khi checkout trên Windows: `.gitattributes` giữ nguyên byte hai nhóm tệp được ghim hash. Không bỏ kiểm fingerprint để làm test qua.
+
+## Kiểm tra bổ sung — 25/11/2026
+
+| Kiểm tra | Kết quả |
+|---|---|
+| `run.bat test`: compileall và 8 suite Python | 2.001 test đạt; 2 test skip |
+| Frontend `npm test` | 18/18 đạt |
+| Frontend `npm run lint`, `npm run build` | Đạt |
+| Liên kết Markdown trong README và tài liệu hiện hành | Đạt; không tính tài liệu archive lịch sử |
+| ZIP mẫu `sample_data/vn_labor_online.zip` | CRC đạt; 96.359.462 byte; SHA-256 `93e0e3a272e141af12476f9b85fba11c72bf3a0bda1c0d5f2403ff9e278eae1c` |
+| Kiểm tra tương thích ZIP với cấu hình ONLINE | `compatible: true`; vẫn provisional |
+| Notebook OFFLINE bàn giao | JSON/cú pháp cell đạt; nội dung khớp generator hiện hành |
+| `git diff --check` | Đạt |
+
+ZIP ONLINE còn các lý do provisional: `SOURCE_CATALOG_HUMAN_REVIEW_INCOMPLETE`, `PROVISION_TEMPORAL_REVIEW_INCOMPLETE`, `GOLD_NOT_APPROVED`. Tương thích kỹ thuật không phải phê duyệt nội dung pháp lý.
+
+Chưa chạy full pipeline từ corpus thật, nạp Aura hoặc thực thi notebook trên Kaggle; các bước đó cần corpus/checkpoint, GPU, Internet và Secrets tương ứng. `/build/` chỉ mở ngoại lệ cho notebook OFFLINE và ZIP input mẫu ONLINE. Tại thời điểm kiểm tra, hai file này cùng thay đổi `.gitignore`/README chưa được stage, commit hoặc push; chúng sẽ **không** có trong clone từ remote cho tới khi được commit và push.
+
+Trong các lượt kiểm tra ban đầu, `test_api_optional_bearer_auth` từng thất bại ở assertion `ready=true`; chạy riêng và các lượt chạy toàn suite sau đó đều đạt. Nguyên nhân chưa xác định, nên cần xem đây là dấu hiệu test readiness có thể không ổn định, không phải bằng chứng đã sửa lỗi.
