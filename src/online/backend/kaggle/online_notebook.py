@@ -39,8 +39,8 @@ def make_notebook(gemini_model='gemini-3.5-flash-lite'):
     ''')
     add('code','settings',r'''
     from pathlib import Path
-    ROOT = Path('/kaggle/working/legal-agentic-rag')
-    REPO_URL = 'https://github.com/tvqui/legal-agentic-rag.git'
+    ROOT = Path('/kaggle/working/phap-dien-ai-legalgraphrag')
+    REPO_URL = 'https://github.com/tvqui/phap-dien-ai-legalgraphrag.git'
     BRANCH = 'main'
     INPUT_ROOT = Path('/kaggle/input')
     # Tự nhận diện, không phụ thuộc tên dataset/ZIP. Nếu có nhiều kết quả cuối,
@@ -244,7 +244,7 @@ def make_notebook(gemini_model='gemini-3.5-flash-lite'):
     if len(gpus)<2: print('Chỉ có một GPU: Dense/reranker và Ollama sẽ dùng chung GPU.',flush=True)
     assert_ports_free()
     try:
-        with urllib.request.urlopen('https://github.com/tvqui/legal-agentic-rag',timeout=20) as response:
+        with urllib.request.urlopen('https://github.com/tvqui/phap-dien-ai-legalgraphrag',timeout=20) as response:
             if response.status!=200: raise RuntimeError('GitHub unavailable')
     except Exception as exc:
         raise RuntimeError('Không truy cập được GitHub. Kiểm tra Internet ON; lỗi: '+type(exc).__name__) from None
@@ -307,13 +307,18 @@ def make_notebook(gemini_model='gemini-3.5-flash-lite'):
     run_step(['git','checkout','--detach','origin/'+BRANCH],'git_checkout',cwd=ROOT)
     COMMIT_USED=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True,timeout=20).strip()
     print('Commit đang dùng:',COMMIT_USED,flush=True)
-    api_source=(ROOT/'src/online/backend/src/vn_labor_online/api.py').read_text(encoding='utf-8')
-    if 'diagnostic-probe-v2' not in api_source or not (ROOT/'src/online/backend/kaggle/check_gemini.py').is_file():
-        raise RuntimeError('main chưa có bản sửa Gemini readiness. Push code local rồi chạy lại cell này.')
-    if not (ROOT/'src/online/backend/src/vn_labor_online/gemini_diagnostics.py').is_file():
-        raise RuntimeError('main chưa có chẩn đoán lỗi Gemini; push bản sửa rồi cập nhật lại.')
-    if '--probe-timeout' not in (ROOT/'src/online/backend/kaggle/check_gemini.py').read_text(encoding='utf-8'):
-        raise RuntimeError('main chưa có probe timeout cấu hình được; push bản sửa mới rồi cập nhật lại.')
+    api_path=ROOT/'src/online/backend/src/vn_labor_online/api.py'
+    check_path=ROOT/'src/online/backend/kaggle/check_gemini.py'
+    diagnostics_path=ROOT/'src/online/backend/src/vn_labor_online/gemini_diagnostics.py'
+    required=(api_path,check_path,diagnostics_path)
+    missing=[str(path.relative_to(ROOT)) for path in required if not path.is_file()]
+    if missing:
+        raise RuntimeError('Checkout does not match the refactored ONLINE layout; missing: '+', '.join(missing)+'. Import the latest notebook from the new GitHub repository and use the fresh ROOT path.')
+    api_source=api_path.read_text(encoding='utf-8')
+    if 'diagnostic-probe-v2' not in api_source:
+        raise RuntimeError('Repo main ch?a c? Gemini readiness diagnostic-probe-v2; c?n ??ng b? code Backend tr??c khi ch?y.')
+    if '--probe-timeout' not in check_path.read_text(encoding='utf-8'):
+        raise RuntimeError('Repo main ch?a c? probe timeout c?u h?nh ???c trong check_gemini.py.')
     constraints=[]
     for package in ('torch','torchvision','torchaudio'):
         try: constraints.append(package+'=='+importlib.metadata.version(package))

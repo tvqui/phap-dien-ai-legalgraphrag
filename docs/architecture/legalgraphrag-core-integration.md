@@ -24,7 +24,7 @@ Hệ thống không sao chép ontology hình sự, charge prediction hoặc prom
 Không cần dựng lại OFFLINE để dùng fact provenance và Community retrieval cơ bản. Trên Kaggle, cập nhật repository rồi chạy:
 
 ```bash
-cd /kaggle/working/legal-agentic-rag
+cd /kaggle/working/phap-dien-ai-legalgraphrag
 git pull --ff-only
 python src/online/backend/kaggle/online_remote.py
 ```
@@ -36,7 +36,7 @@ Notebook phải bật GPU và Internet, đồng thời có Dataset chứa `artif
 Chỉ làm bước này khi cần checklist/ontology/community summary mới. Đây là tác vụ nên chạy trên Kaggle T4 x2:
 
 ```bash
-cd /kaggle/working/legal-agentic-rag
+cd /kaggle/working/phap-dien-ai-legalgraphrag
 git pull --ff-only
 python src/offline/kaggle/offline_ai_remote.py --mode hybrid_ai
 ```

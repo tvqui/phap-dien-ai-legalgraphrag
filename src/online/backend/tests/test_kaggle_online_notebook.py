@@ -305,9 +305,9 @@ class KaggleOnlineNotebookTests(unittest.TestCase):
         (repo/'src/online/backend/kaggle/check_gemini.py').write_text('--probe-timeout',encoding='utf-8')
         calls = []
         def git_output(args, **kwargs):
-            return {'remote':'https://github.com/tvqui/legal-agentic-rag.git\n',
+            return {'remote':'https://github.com/tvqui/phap-dien-ai-legalgraphrag.git\n',
                     'status':'','rev-parse':'new-main-sha\n'}[args[1]]
-        self.scope.update(ROOT=repo, REPO_URL='https://github.com/tvqui/legal-agentic-rag.git',
+        self.scope.update(ROOT=repo, REPO_URL='https://github.com/tvqui/phap-dien-ai-legalgraphrag.git',
             BRANCH='main', PYTHON=self.root/'env/bin/python',
             run_step=lambda args,*a,**kw:calls.append(list(map(str,args))))
         with patch('subprocess.check_output',side_effect=git_output), \
@@ -320,6 +320,20 @@ class KaggleOnlineNotebookTests(unittest.TestCase):
         self.assertIn('torch==2.8.0',(self.scope['WORKING']/'torch_constraints.txt').read_text())
         self.assertEqual(sum(call[:2]==['apt-get','update'] for call in calls),1)
         self.assertTrue(any('--system-site-packages' in call for call in calls))
+
+    def test_stale_repository_layout_fails_with_actionable_error(self):
+        repo=self.root/'stale_repo'
+        (repo/'.git').mkdir(parents=True)
+        def git_output(args,**kwargs):
+            return {'remote':'https://github.com/tvqui/phap-dien-ai-legalgraphrag.git\n',
+                    'status':'','rev-parse':'test-sha\n'}[args[1]]
+        self.scope.update(ROOT=repo,REPO_URL='https://github.com/tvqui/phap-dien-ai-legalgraphrag.git',
+            BRANCH='main',PYTHON=self.root/'env/bin/python',run_step=lambda *a,**kw:None)
+        with patch('subprocess.check_output',side_effect=git_output), \
+             patch('importlib.metadata.version',return_value='2.8.0'), \
+             contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError,'Checkout does not match the refactored ONLINE layout'):
+                exec(self.code['setup'],self.scope)
 
     def test_pin_incompatible_report_cannot_become_success(self):
         pin, expected = self.release()

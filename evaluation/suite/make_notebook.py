@@ -19,8 +19,8 @@ Notebook lấy code mới từ GitHub, chạy các thí nghiệm riêng và xu�
 Muốn đánh giá nghiên cứu, chọn `standard` và cung cấp Gold đã rà soát.
 ''')
     code('''from pathlib import Path
-REPO_URL = "https://github.com/tvqui/legal-agentic-rag.git"
-ROOT = Path('/kaggle/working/legal-agentic-rag')
+REPO_URL = "https://github.com/tvqui/phap-dien-ai-legalgraphrag.git"
+ROOT = Path('/kaggle/working/phap-dien-ai-legalgraphrag')
 WORK = Path('/kaggle/working/evaluation_work')
 PROFILE = 'smoke'  # set 'standard' after smoke succeeds
 RESUME_EVALUATION_ZIP = None  # e.g. '/kaggle/input/old-run/evaluation_...zip'; same code/data/settings required  # 'standard' uses settings.yaml limits and three repetitions
@@ -64,7 +64,7 @@ run([PYTHON,'-c','import torch,FlagEmbedding,faiss,datasets; assert torch.cuda.i
 if not (ROOT/'evaluation/suite/protocol.py').exists() or 'labor-evaluation-v2-20261028' not in (ROOT/'evaluation/suite/protocol.py').read_text(encoding='utf-8'):
     raise RuntimeError('Push evaluation suite v2 before running this notebook.')
 if not (ROOT/'evaluation/suite/suite.py').exists():
-    raise RuntimeError('Push the evaluation_suite folder to GitHub before Run All.')
+    raise RuntimeError('The evaluation suite must be present at evaluation/suite on GitHub before Run All.')
 ''')
     code('''from kaggle_secrets import UserSecretsClient
 client=UserSecretsClient()

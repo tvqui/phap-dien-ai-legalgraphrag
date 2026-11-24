@@ -88,7 +88,7 @@ Thay đổi này nằm ở ONLINE và đọc các artifacts hiện có. **Không
 Nếu checkout Kaggle sạch và chạy nhánh `main`, dùng một cell:
 
 ```python
-%cd /kaggle/working/legal-agentic-rag
+%cd /kaggle/working/phap-dien-ai-legalgraphrag
 !git pull --ff-only origin main
 ```
 

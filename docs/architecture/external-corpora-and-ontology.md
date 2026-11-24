@@ -85,7 +85,7 @@ Sau khi code mới đã push, dùng notebook riêng hoặc phiên OFFLINE, bật
 import subprocess, sys
 from pathlib import Path
 
-ROOT = Path('/kaggle/working/legal-agentic-rag')  # repo đã clone/cập nhật
+ROOT = Path('/kaggle/working/phap-dien-ai-legalgraphrag')  # repo đã clone/cập nhật
 def run(*args):
     subprocess.run([sys.executable, *args], cwd=ROOT, check=True)
 

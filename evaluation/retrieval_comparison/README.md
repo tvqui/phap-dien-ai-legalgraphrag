@@ -46,7 +46,7 @@ là **đường dẫn đúng dataset kết quả của bạn**. Ví dụ:
 ```python
 import subprocess, sys
 from pathlib import Path
-ROOT = Path('/kaggle/working/legal-agentic-rag')
+ROOT = Path('/kaggle/working/phap-dien-ai-legalgraphrag')
 ARTIFACT = '/kaggle/input/datasets/TEN-TAI-KHOAN/TEN-DATASET/artifacts'
 GOLD = '/kaggle/working/gold_draft.jsonl'
 assert Path(ARTIFACT).exists(), 'Thay ARTIFACT bằng đường dẫn Input thực tế'

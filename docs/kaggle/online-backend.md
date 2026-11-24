@@ -39,8 +39,8 @@ backend.
 ## 2. Cell cài đặt
 
 ```python
-!git clone https://github.com/tvqui/legal-agentic-rag.git /kaggle/working/legal-agentic-rag
-%cd /kaggle/working/legal-agentic-rag
+!git clone https://github.com/tvqui/phap-dien-ai-legalgraphrag.git /kaggle/working/phap-dien-ai-legalgraphrag
+%cd /kaggle/working/phap-dien-ai-legalgraphrag
 !python -m pip install -q -e ".[retrieval,online]" ngrok
 !curl -fsSL https://ollama.com/install.sh | sh
 ```
@@ -50,7 +50,7 @@ backend.
 Cell này phải tiếp tục chạy để giữ backend và tunnel sống:
 
 ```python
-%cd /kaggle/working/legal-agentic-rag
+%cd /kaggle/working/phap-dien-ai-legalgraphrag
 !python src/online/backend/kaggle/online_remote.py
 ```
 

@@ -31,8 +31,8 @@ from pathlib import Path
 import re
 SOURCE = 'github'       # github | attached_zip
 CODE_ZIP = 'auto'            # hoặc đường dẫn ZIP / thư mục chứa package_manifest.json
-REPO_URL = 'https://github.com/tvqui/legal-agentic-rag.git'
-CODE_ROOT = Path('/kaggle/working/graph_qa_code')
+REPO_URL = 'https://github.com/tvqui/phap-dien-ai-legalgraphrag.git'
+CODE_ROOT = Path('/kaggle/working/phap-dien-ai-graphqa-code')
 WORK = Path('/kaggle/working/graph_qa_evaluation')
 PROFILE = 'standard'         # standard | smoke (nếu đổi môi trường)
 RUN_NAME = 'graph_qa_v8'
