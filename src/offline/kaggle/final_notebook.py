@@ -58,7 +58,7 @@ import time
 import urllib.request
 
 matches = [p for p in Path('/kaggle/input').rglob('bundle_manifest.json')
-           if (p.parent / 'kaggle/bootstrap.py').exists()]
+           if (p.parent / 'src/offline/kaggle/bootstrap.py').exists()]
 if len(matches) != 1:
     raise RuntimeError('Cần đúng một Dataset package VN Labor mới; tìm thấy: ' + str(len(matches)))
 source = matches[0].parent
@@ -78,7 +78,7 @@ if restore == 'AUTO':
     restore = str(candidates[0])
 print('Checkpoint:', restore, flush=True)
 
-spec = importlib.util.spec_from_file_location('vn_kaggle_bootstrap', source / 'kaggle/bootstrap.py')
+spec = importlib.util.spec_from_file_location('vn_kaggle_bootstrap', source / 'src/offline/kaggle/bootstrap.py')
 bootstrap = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bootstrap)
 ROOT = bootstrap.prepare(source, restore=restore)
@@ -164,7 +164,7 @@ def run_logged(arguments, name, extra_env=None, heartbeat_seconds=60,
                 pass
             raise
 
-subprocess.run([str(PYTHON), 'kaggle/remote.py', 'configure'], cwd=ROOT, check=True)
+subprocess.run([str(PYTHON), 'src/offline/kaggle/remote.py', 'configure'], cwd=ROOT, check=True)
 # Guard the regression that previously failed only after a six-hour AI run. A
 # stale code Dataset now stops here before Ollama is installed or invoked.
 collision_probe = '''from vn_labor_offline.ai_requests import AIRequests,source_chunks
@@ -219,14 +219,14 @@ AI_ENV = {**NEO4J_ENV,
 if LOAD_AURA:
     # Credential/connectivity preflight is read-only, before the long build.
     result = subprocess.run(
-        [str(PYTHON), 'kaggle/aura_preflight.py', '--report',
+        [str(PYTHON), 'src/offline/kaggle/aura_preflight.py', '--report',
          str(REPORTS / 'aura_preflight.json')],
         cwd=ROOT, env=dict(os.environ, **NEO4J_ENV), timeout=180)
     if result.returncode:
         raise RuntimeError('Aura preflight chưa PASS. Xem reason_code ở trên hoặc aura_preflight.json. '
                            'Kiểm tra URI/Secrets; nếu muốn dựng OFFLINE trước, đặt LOAD_AURA = False.')
 if not RESUME_AI_ONLY:
-    subprocess.run([str(PYTHON), 'kaggle/remote.py', 'preflight'], cwd=ROOT, check=True, timeout=3600)
+    subprocess.run([str(PYTHON), 'src/offline/kaggle/remote.py', 'preflight'], cwd=ROOT, check=True, timeout=3600)
 else:
     print('AI resume: corpus/provenance/Dense/BM25 audit precedes AI; no OCR/model reindex.', flush=True)
 print('Ollama will start AFTER the technical checkpoint export.', flush=True)
@@ -237,7 +237,7 @@ print('Ollama will start AFTER the technical checkpoint export.', flush=True)
 Mốc `vn_labor_results_technical_checkpoint.zip` được tạo trước AI. Nếu cell thất bại, notebook cố xuất
 `vn_labor_results_recovery.zip`; hãy giữ file đó để phiên sau tiếp tục từ AI cache.
 """)
-    code("""arguments = ['kaggle/offline_final_remote.py',
+    code("""arguments = ['src/offline/kaggle/offline_final_remote.py',
              '--ai-max-provisions', str(OFFLINE_AI_MAX_PROVISIONS)]
 if RESUME_AI_ONLY:
     arguments.append('--resume-ai')
@@ -265,7 +265,7 @@ except BaseException as exc:
     # The runner normally exports recovery itself. This second attempt covers a
     # parent timeout that terminated the runner before its exception handler ran.
     try:
-        subprocess.run([str(PYTHON), 'kaggle/remote.py', 'export',
+        subprocess.run([str(PYTHON), 'src/offline/kaggle/remote.py', 'export',
                         '--archive-name', 'vn_labor_results_recovery.zip'], cwd=ROOT, check=False)
     except Exception:
         pass

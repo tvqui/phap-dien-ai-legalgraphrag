@@ -1,76 +1,27 @@
-# Chạy pipeline trên Kaggle
+# Chạy pipeline OFFLINE trên Kaggle
 
-Kaggle dùng để chạy OFFLINE bằng GPU/CPU/RAM từ xa. Notebook và Dataset phải để **Private**.
-Build kỹ thuật V8.1 hiện đã PASS; chỉ chạy lại khi code, config, corpus hoặc quyết định review
-được thay đổi.
+> Đây là trang tóm tắt. Hướng dẫn đầy đủ và mới nhất nằm tại [README — Dựng hoặc tiếp tục dữ liệu OFFLINE trên Kaggle](../../README.md#dựng-hoặc-tiếp-tục-dữ-liệu-offline-trên-kaggle).
 
-## Chuẩn bị trên máy local
+## Trạng thái notebook hiện hành
 
-Tạo lại bundle từ code hiện tại:
+`build/kaggle/VN_Labor_Kaggle_V8.ipynb` là notebook **checkpoint-first**. Notebook yêu cầu hai Kaggle Input Private:
+
+1. Dataset mã nguồn và corpus, được đóng gói thành `vn_labor_bundle/`.
+2. Đúng một checkpoint OFFLINE có `artifacts/00_manifest/files.jsonl` hoặc ZIP kết quả có thư mục `artifacts/`.
+
+Notebook không dựng lần đầu từ Kaggle Input trống. Nếu chỉ muốn chạy Backend ONLINE/demo, dùng artifact mẫu `sample_data/vn_labor_online.zip` theo README; không cần chạy lại OFFLINE. Chỉ khi cần dựng hoặc cập nhật dữ liệu thì mới cần corpus và checkpoint OFFLINE. Corpus nguồn không nằm trong Git; người chạy phải được cấp riêng.
+
+## Tạo gói và chạy
+
+Tại PowerShell ở thư mục repo, sau khi đã đặt corpus và có checkpoint:
 
 ```powershell
-.\.venv\Scripts\python.exe src\offline\scripts\package_kaggle.py
+run.bat setup-full
+run.bat offline
+run.bat validate
+run.bat kaggle
 ```
 
-Sau khi lệnh chạy xong, chỉ dùng ba đầu ra hiện hành trong `build/kaggle/`:
+Nếu đã có build OFFLINE đã kiểm định, không cần chạy lại `run.bat offline`; tạo/update gói bằng `run.bat kaggle`. Kiểm tra `build/kaggle/package_report.json`, rồi giải nén `build/kaggle/vn_labor_kaggle_v8.zip` và tải cây `vn_labor_bundle/` lên Kaggle Dataset **Private**. Import `build/kaggle/VN_Labor_Kaggle_V8.ipynb`, thêm Dataset mã/corpus và một Dataset checkpoint, bật Internet và GPU T4 x2. Theo dõi checkpoint, cấu hình model, Aura Secrets và đầu ra theo hướng dẫn README ở trên.
 
-- `vn_labor_kaggle_v8.zip`: Dataset Private chứa code/config/corpus;
-- `VN_Labor_Kaggle_V8.ipynb`: Notebook để import;
-- `package_report.json`: SHA-256 và kết quả kiểm ZIP.
-
-Notebook xác minh `bundle_manifest.json`, tìm
-`src/offline/kaggle/bootstrap.py` trong Dataset và chạy worker trong
-`src/offline/kaggle/`. Không đổi cây thư mục bên trong ZIP sau khi đóng gói.
-
-Nếu chạy nối tiếp, tạo Dataset Private thứ hai từ ZIP checkpoint mới nhất có thư mục
-`artifacts/`. Không gắn đồng thời nhiều checkpoint vì Notebook sẽ từ chối khi tìm thấy nhiều
-nguồn khôi phục.
-
-## Chạy build OFFLINE
-
-1. Vào Kaggle bằng tài khoản của bạn, chọn **Code → New Notebook**.
-2. Chọn **File → Import Notebook** và tải `VN_Labor_Kaggle_V8.ipynb`.
-3. Trong **Input → Add Input**, gắn Dataset code/corpus và đúng một Dataset checkpoint.
-4. Trong **Settings**, bật Internet và chọn GPU T4 x2.
-5. Giữ cấu hình:
-
-```python
-RUN_PIPELINE = True
-LOAD_AURA = False
-RESTORE_ARCHIVE = "AUTO"
-```
-
-6. Chọn **Save Version → Save & Run All** và chờ hoàn tất.
-7. Tải `vn_labor_results.zip` từ Output. Kiểm tra `final_outputs_validation.json`,
-   `dense_validation.json`, `validation_issues.jsonl` và `tong_hop_sau_chay.md`.
-
-## Nạp Neo4j Aura mà không build lại
-
-Gắn ZIP kết quả vừa kiểm tra làm checkpoint duy nhất, sau đó đặt:
-
-```python
-RUN_PIPELINE = False
-LOAD_AURA = True
-RESTORE_ARCHIVE = "AUTO"
-```
-
-Trong **Add-ons → Secrets**, cấp cho Notebook bốn secret:
-
-- `NEO4J_URI`
-- `NEO4J_USER`
-- `NEO4J_PASSWORD`
-- `NEO4J_DATABASE`
-
-Chạy **Save Version → Save & Run All**. Cách này chỉ khôi phục artifacts, nạp Aura và audit;
-không chạy lại OCR, Dense hay BM25. Kết quả hợp lệ phải có `neo4j_validation.json` cùng
-build ID với graph/indexes.
-
-## Quy tắc an toàn dữ liệu
-
-- Không đưa secret vào cell hoặc ZIP.
-- Không tự đổi `UNVERIFIED` thành `VERIFIED`.
-- Không trộn code bundle, checkpoint và Gold của các build khác nhau.
-- Nếu chỉ làm human review, không cần chạy lại Kaggle.
-- Sau khi merge review, rebuild các stage phụ thuộc rồi cập nhật fingerprint ONLINE.
-
-Các bước review tiếp theo nằm tại [review_next_steps.md](../README.md).
+`package_report.json` chỉ chứng minh việc đóng gói và cú pháp notebook ở local; nó không chứng minh Kaggle đã chạy thành công. Sau khi chạy, chỉ dùng `vn_labor_online.zip` làm Input cho Backend ONLINE nếu các kiểm định đi kèm đạt yêu cầu. Giữ `vn_labor_offline_review.zip`, `release.json` và checkpoint để xem lại hoặc tiếp tục xử lý.

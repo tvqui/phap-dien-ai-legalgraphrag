@@ -11,6 +11,7 @@ Dự án gồm quy trình **OFFLINE** để xây dựng/kiểm tra dữ liệu, 
 | Chạy API và giao diện trên máy | [Chạy ONLINE local](#chạy-online-trên-máy-local-windows) | API http://127.0.0.1:8000, giao diện http://127.0.0.1:5173 |
 | Chạy Backend trên Kaggle | [Chạy Backend ONLINE trên Kaggle](#chạy-backend-online-trên-kaggle) | URL Backend tạm thời và log |
 | Dựng dữ liệu từ đầu | [OFFLINE](docs/offline.md), [đóng gói artifact](docs/offline/artifact-layout.md) | vn_labor_online.zip và gói review |
+| Dùng output đã dựng sẵn | `sample_data/vn_labor_online.zip` | Chạy Backend mà không phải chạy lại OFFLINE |
 | Đo chất lượng | [evaluation/README.md](evaluation/README.md) | Kết quả theo từng phép đo |
 
 ## Cấu trúc repository
@@ -27,7 +28,7 @@ data/                                 Hướng dẫn về dữ liệu; dữ li�
 docs/                                 Kiến trúc và hướng dẫn
 ~~~
 
-Artifact lớn, PDF nguồn, cache, model weights và API keys không thuộc Git. Không commit .env, token hay khóa API.
+Corpus PDF/DOCX, cache dựng trung gian, model weights và API keys không thuộc Git. Repo có kèm một artifact ONLINE đã dựng để dùng nhanh tại `sample_data/vn_labor_online.zip`; không commit `.env`, token hay khóa API.
 
 ## Chạy ONLINE trên máy local (Windows)
 
@@ -58,7 +59,13 @@ Tạo thư mục rồi chép **file vn_labor_online.zip** vào:
 New-Item -ItemType Directory -Force build/releases | Out-Null
 ~~~
 
-Đường dẫn mẫu phải là build/releases/vn_labor_online.zip. Không dùng vn_labor_offline_review.zip, Gold ZIP, checkpoint hoặc thư mục nghiên cứu làm artifact chạy.
+Đường dẫn mẫu phải là build/releases/vn_labor_online.zip. Repo có sẵn artifact OFFLINE đã dựng tại `sample_data/vn_labor_online.zip`; để chạy thử hoặc demo mà không mất thời gian chạy lại OFFLINE, dùng lệnh:
+
+~~~powershell
+Copy-Item -LiteralPath sample_data/vn_labor_online.zip -Destination build/releases/vn_labor_online.zip -Force
+~~~
+
+Nếu nhóm đã có ZIP mới hơn, có thể thay file mẫu bằng bản đó. Không dùng vn_labor_offline_review.zip, Gold ZIP, checkpoint hoặc thư mục nghiên cứu làm artifact chạy.
 
 ### 3. Ghim đúng artifact vào cấu hình
 
@@ -99,6 +106,59 @@ Mở http://127.0.0.1:5173. Dừng từng tiến trình bằng Ctrl+C trong cử
 
 Kiểm tra local bằng run.bat help, run.bat test hoặc run.bat validate. Test dùng fixture/mock ở các bước cần dịch vụ ngoài; PASS không thay việc duyệt pháp lý.
 
+## Dựng dữ liệu OFFLINE trên máy local (Windows)
+
+Đây là cách dựng mới từ corpus PDF/HTML/DOCX đang có trên máy. Dữ liệu nguồn không nằm trên Git; bạn phải cấp đủ bộ corpus theo danh mục của dự án.
+
+### 1. Chuẩn bị nguồn
+
+Đặt nguồn theo cấu hình mặc định trong thư mục data/:
+
+~~~text
+data/
+  legal_corpus/       Văn bản pháp luật lao động và văn bản liên quan
+  judicial_corpus/    Bản án/án lệ nếu có trong bộ nguồn được duyệt
+  supplementary/      Tài liệu bổ sung được cấu hình
+review/attachments/   Tệp đính kèm được source_attachments.yaml tham chiếu
+~~~
+
+Không đổi tên hoặc bỏ tệp được liệt kê trong src/offline/config/source_catalog.yaml, src/offline/config/source_attachments.yaml và src/offline/review/corrections/. Kiểm tra file nguồn đúng phiên bản/hash khi cấu hình có khai báo. Nếu bộ dữ liệu của bạn đặt ở nơi khác, cập nhật data_dir trong src/offline/config/pipeline.yaml trước khi chạy.
+
+### 2. Cài môi trường và chạy pipeline
+
+Mở PowerShell tại thư mục gốc repo:
+
+~~~powershell
+run.bat setup-full
+run.bat offline
+~~~
+
+run.bat offline chạy pipeline theo src/offline/config/pipeline.yaml: quét nguồn, trích xuất văn bản/OCR có chọn lọc, chuẩn hóa, dựng registry và Điều–Khoản–Điểm, provenance/phiên bản, tri thức và graph, rồi xây BM25 và Dense/FAISS. Lần đầu cần Internet để cài thư viện và tải model BGE-M3; thời gian phụ thuộc dung lượng corpus, phần OCR và phần cứng.
+
+Nếu cấu hình cần Neo4j local, mở Docker Desktop trước rồi chạy trong PowerShell:
+
+~~~powershell
+run.bat neo4j
+run.bat load-neo4j
+~~~
+
+Không chạy lệnh load Neo4j nếu bạn không dùng Neo4j local hoặc đã cấu hình một đích khác phù hợp.
+
+### 3. Kiểm tra và đóng gói kết quả
+
+~~~powershell
+run.bat validate
+~~~
+
+Khi audit đạt, hệ thống tạo thư mục release có timestamp cạnh artifact làm việc, thường theo dạng releases/YYYYMMDDTHHMMSSffffffZ/. Trong đó:
+
+- vn_labor_online.zip: gói nhỏ đưa cho Backend ONLINE.
+- vn_labor_offline_review.zip: báo cáo và dữ liệu trung gian để xem/đối chiếu; không dùng làm artifact Backend.
+- release.json: build ID và SHA-256 của hai ZIP.
+
+Kiểm tra reports/final_outputs_validation.json, reports/dense_validation.json, reports/neo4j_validation.json, reports/validation_issues.jsonl và release.json. Nếu validation chưa PASS, xem từng check/detail trong báo cáo, sửa đúng nguồn hoặc cấu hình rồi chạy lại bước phụ thuộc; không đổi nhãn UNVERIFIED thành VERIFIED bằng tay. Trạng thái kỹ thuật PASS không đồng nghĩa nội dung đã được người có chuyên môn duyệt pháp lý.
+
+Muốn chạy ONLINE local sau đó, chép đúng vn_labor_online.zip vào build/releases/ và làm theo các bước [chạy ONLINE local](#chạy-online-trên-máy-local-windows).
 ## Chạy Backend ONLINE trên Kaggle
 
 Notebook Backend tự lấy mã mới nhất từ main, dò artifact theo cấu trúc, kiểm fingerprint và dừng nếu không tương thích. Chỉ cần thêm Dataset artifact; **không cần tải code thành Kaggle Dataset**. Notebook phải chạy trong phiên tương tác để API/tunnel còn hoạt động.
@@ -111,22 +171,12 @@ Mở [ONLINE_Backend.ipynb trên GitHub](https://github.com/tvqui/phap-dien-ai-l
 
 1. Bật **Internet** trong Settings.
 2. Chọn GPU **T4 x2** nếu tùy chọn có sẵn.
-3. Chọn **Add Input → Datasets**, thêm đúng **một** Dataset chứa artifact OFFLINE cuối đã kiểm tra.
+3. Chọn **Add Input → Datasets**, thêm đúng **một** Dataset chứa artifact OFFLINE đã kiểm tra.
 4. Trong Secrets, tạo và cấp quyền cho các tên chính xác: GEMINI_API_KEY, VN_LABOR_API_KEY (chuỗi ngẫu nhiên ít nhất 32 ký tự), NGROK_AUTHTOKEN; HF_TOKEN là tùy chọn.
 
-Ví dụ tên Dataset để tìm trong Add Input, theo Dataset đã dùng:
+Để dùng ngay dữ liệu đã dựng sẵn trong repo, tải `sample_data/vn_labor_online.zip` từ GitHub, tạo Kaggle Dataset **Private** tên `phapdienai-labor-artifact-final-v2`, tải đúng file `vn_labor_online.zip` lên Dataset rồi gắn Dataset đó qua **Add Input**. Không cần giải nén và không cần chạy lại OFFLINE. Notebook Backend tự dò ZIP hợp lệ trong `/kaggle/input`; nếu chỉ có một artifact hợp lệ thì không cần nhập đường dẫn. Nếu tải artifact đã giải nén, cấu trúc nhận diện là thư mục `artifacts/` gồm `00_manifest/`, `01_extracted/`, `02_registry/`, `03_structure/`, `04_knowledge/`, `05_graph/`, `06_indexes/` và `reports/`.
 
-~~~text
-phapdienai-labor-artifact-final-v2
-~~~
-
-Bên trong Dataset, cấu trúc mẫu là artifacts/ gồm 00_manifest/, 01_extracted/, 02_registry/, 03_structure/, 04_knowledge/, 05_graph/, 06_indexes/ và reports/. Đường dẫn mount ví dụ:
-
-~~~text
-/kaggle/input/phapdienai-labor-artifact-final-v2/artifacts
-~~~
-
-Kaggle có thể chuẩn hóa tên mount; notebook tự dò trong /kaggle/input, không cần nhập đường dẫn nếu chỉ có một artifact hợp lệ. Không thêm gói review, Gold ZIP, checkpoint hay code bundle thay artifact ONLINE.
+Không thêm gói review, Gold ZIP, checkpoint hoặc code bundle thay artifact ONLINE.
 
 ### 3. Chạy và xác nhận
 
@@ -144,18 +194,82 @@ BACKEND_PROXY_TOKEN=GIA_TRI_VN_LABOR_API_KEY
 
 Sau đó chạy run.bat frontend, mở http://127.0.0.1:5173. Không commit .env. URL tunnel có thể đổi sau khi Kaggle restart. Khi báo lỗi, lưu Commit đang dùng:, Input đã chọn: và mã lỗi; không gửi API key/token.
 
-### Dựng dữ liệu OFFLINE trên Kaggle
+## Dựng hoặc tiếp tục dữ liệu OFFLINE trên Kaggle
 
-Đây là quy trình khác với chạy Backend ONLINE:
+**Lưu ý về notebook hiện hành:** VN_Labor_Kaggle_V8.ipynb được thiết kế theo kiểu checkpoint-first. Mặc định nó tiếp tục AI enrichment từ một checkpoint OFFLINE có sẵn; nó không khởi đầu từ một Kaggle Input trống. Muốn dựng toàn bộ từ corpus thô lần đầu, chạy run.bat offline trên local trước, hoặc cần một notebook cold-start riêng. Đặt RESUME_AI_ONLY=False không bỏ yêu cầu checkpoint.
 
-1. Tạo bundle private từ repo local:
+#### A. Tạo Dataset chứa mã nguồn và corpus
+
+1. Trước hết phải có corpus trong `data/` và một checkpoint OFFLINE hợp lệ. Nếu bắt đầu từ repo clone mới, đặt corpus cùng các tệp review được cấu hình vào đúng chỗ rồi chạy pipeline local theo mục trên:
    ~~~powershell
-   ./.venv/Scripts/python.exe src/offline/scripts/package_kaggle.py
+   run.bat setup-full
+   run.bat offline
+   run.bat validate
    ~~~
-2. Dùng notebook và bundle trong build/kaggle/; import notebook, thêm Dataset code/corpus cần thiết và làm theo [hướng dẫn OFFLINE Kaggle](docs/kaggle/guide.md).
-3. Khi OFFLINE qua validation, tải vn_labor_online.zip từ Output, đưa vào một Dataset (ví dụ tên ở trên), rồi thêm Dataset làm Input cho Backend.
-4. Giữ vn_labor_offline_review.zip để xem báo cáo/trung gian; không dùng nó làm artifact Backend.
+   Chỉ tiếp tục khi validation đạt và `artifacts/` có đủ dữ liệu. Bước này cũng tạo bản DOCX đã chuyển đổi từ các nguồn `.doc`; bộ đóng gói Kaggle cần các bản này. Nếu đã có checkpoint đã kiểm định, có thể dùng lại thay vì dựng lại.
+2. Sau đó tạo gói Kaggle:
+   ~~~powershell
+   run.bat kaggle
+   ~~~
+   Lệnh tương đương là `./.venv/Scripts/python.exe -X utf8 src/offline/scripts/package_kaggle.py`.
+3. Kiểm tra build/kaggle/package_report.json. Cần thấy zip_crc_check là PASS, notebook_code_syntax là PASS và corpus_files lớn hơn 0. `uploaded: false` và `remote_execution_tested: false` là trạng thái bình thường: script chỉ đóng gói, chưa tải lên hoặc chạy trên Kaggle.
+4. File ZIP được tạo ở build/kaggle/vn_labor_kaggle_v8.zip. Giải nén ZIP này trên máy; bên trong phải có thư mục vn_labor_bundle/ với bundle_manifest.json, src/offline/kaggle/bootstrap.py, src/ và data/.
+5. Tạo một Kaggle Dataset **Private** tên mẫu vn-labor-code-corpus-v8. Tải nội dung đã giải nén sao cho Kaggle nhìn thấy cùng trong một cây thư mục:
+   ~~~text
+   vn_labor_bundle/bundle_manifest.json
+   vn_labor_bundle/src/offline/kaggle/bootstrap.py
+   vn_labor_bundle/data/
+   ~~~
+   Không chỉ tải file ZIP lồng bên trong: notebook cần đọc trực tiếp bundle_manifest.json và src/offline/kaggle/bootstrap.py trong Input. Không sửa file bên trong sau khi đóng gói vì notebook xác minh SHA-256 từng file.
 
+#### B. Tạo Dataset chứa checkpoint
+
+Notebook cần đúng một checkpoint bên cạnh Dataset mã nguồn/corpus. Tạo một Kaggle Dataset **Private**, ví dụ vn-labor-checkpoint-current, từ một trong các nguồn sau:
+
+- Thư mục artifact đầy đủ có artifacts/00_manifest/files.jsonl; hoặc
+- ZIP checkpoint do lần chạy OFFLINE trước xuất, thường là vn_labor_results.zip hoặc vn_labor_results_recovery.zip.
+
+Nếu tiếp tục sau một lần chạy bị ngắt, ưu tiên vn_labor_results_recovery.zip mới nhất vì nó có thể giữ AI cache và tiến độ mới nhất. vn_labor_results_technical_checkpoint.zip được tạo trước AI; dùng nó khi cần trở về mốc kỹ thuật trước bước AI. Chỉ gắn một checkpoint. Nếu gắn nhiều bản, RESTORE_ARCHIVE="AUTO" sẽ báo tìm thấy nhiều nguồn; không chọn ngẫu nhiên hoặc trộn các build khác nhau.
+
+#### C. Import notebook và cài Kaggle Inputs
+
+1. Trong repo, mở build/kaggle/VN_Labor_Kaggle_V8.ipynb. Nếu chưa tạo file này, bước package_kaggle.py ở trên sẽ sinh notebook cùng ZIP.
+2. Tải file notebook về. Trong Kaggle chọn Code → New Notebook → File → Import Notebook và tải VN_Labor_Kaggle_V8.ipynb lên.
+3. Trong Settings, bật Internet và chọn GPU T4 x2. AI mặc định cần hai GPU: Dense chạy trên GPU 0, Ollama qwen3:8b chạy trên GPU 1. Nếu không chạy AI, hãy đổi cấu hình có chủ đích; đừng bỏ qua preflight GPU.
+4. Trong Input → Add Input → Datasets, gắn đúng hai Dataset: vn-labor-code-corpus-v8 và vn-labor-checkpoint-current. Nếu dùng tên khác, không cần sửa code; notebook nhận diện theo manifest và cấu trúc bên trong.
+5. Trong Add-ons → Secrets, tạo và cấp quyền đúng bốn tên: NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, NEO4J_DATABASE. URI Aura phải có dạng neo4j+s://...; không đặt giá trị secret trong cell hoặc Dataset.
+
+#### D. Chọn chế độ và chạy
+
+Cấu hình mặc định trong cell đầu:
+
+~~~python
+RESTORE_ARCHIVE = "AUTO"
+RESUME_AI_ONLY = True
+REFRESH_EXTRACTION_QUALITY = False
+RUN_AI_ENRICHMENT = True
+OFFLINE_AI_MODEL = "qwen3:8b"
+OFFLINE_AI_MAX_PROVISIONS = 250
+LOAD_AURA = True
+~~~
+
+Giữ các giá trị này khi mục tiêu là tiếp tục AI từ checkpoint. Notebook kiểm SHA/provenance/index trước khi gọi Ollama, giữ cache AI, xuất technical checkpoint trước AI, chạy phần enrichment còn thiếu, nạp Aura, audit rồi xuất kết quả. Vì resume AI-only, nó không OCR lại toàn corpus và không dựng lại Dense/BM25.
+
+Nếu cần làm mới extraction trên checkpoint hiện có, chỉ bật REFRESH_EXTRACTION_QUALITY=True đồng thời đặt RESUME_AI_ONLY=False; việc này chạy lại extraction/OCR có chọn lọc và mất thời gian hơn. Không chọn tổ hợp RESUME_AI_ONLY=True cùng REFRESH_EXTRACTION_QUALITY=True. Đây vẫn là làm mới từ checkpoint, không phải chạy trắng từ corpus.
+
+Chọn **Save Version → Save & Run All**, chờ các cell hoàn tất. Theo dõi HEARTBEAT, stage, số câu AI đã xử lý, log và trạng thái GPU. Nếu Kaggle/Ollama lỗi, giữ output và dùng recovery ZIP mới nhất cho lượt tiếp tục; không xóa checkpoint cũ trước khi xác nhận ZIP mới tải được.
+
+#### E. Lấy và kiểm tra đầu ra
+
+Notebook hiện các liên kết tải trong Output. Tải và lưu riêng:
+
+- vn_labor_online.zip: chỉ gói này đưa vào Kaggle Backend ONLINE. Tạo Dataset, ví dụ phapdienai-labor-artifact-final-v2, rồi dùng nó theo mục [chạy Backend ONLINE trên Kaggle](#chạy-backend-online-trên-kaggle).
+- vn_labor_offline_review.zip và release.json: hồ sơ kiểm tra, trung gian, build ID và SHA-256.
+- vn_labor_results.zip: checkpoint hoàn tất để lưu hoặc tiếp tục công việc sau.
+- vn_labor_results_technical_checkpoint.zip: mốc kỹ thuật xuất trước AI.
+- vn_labor_results_recovery.zip: checkpoint phục hồi sau lỗi, nếu notebook tạo được.
+
+Trong báo cáo, kiểm tra offline_final_run.json, tong_hop_sau_chay.md, reports/final_outputs_validation.json, reports/dense_validation.json, reports/neo4j_validation.json, reports/validation_issues.jsonl và release.json. Chỉ dùng vn_labor_online.zip khi audit/validation báo PASS; nhãn dữ liệu pháp lý và human review vẫn phải được công bố đúng trạng thái.
 ## Notebook đánh giá
 
 Notebook đo chính nằm dưới evaluation/: evaluation/suite/, evaluation/notebooks/, evaluation/graph_qa/. Chúng clone repo, cài package từ checkout và lưu kết quả theo lần chạy. Notebook recovery cần checkpoint và commit gốc; không đổi commit khi tiếp tục lần đo cũ.

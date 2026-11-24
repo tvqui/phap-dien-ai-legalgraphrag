@@ -58,6 +58,7 @@ pnpm-debug.log*
 /evaluation/graph_qa/study/*.log
 /evaluation/retrieval_comparison/results/
 /evaluation/suite/results/
+/đo
 
 # Secrets and machine-local settings
 .env

@@ -113,14 +113,16 @@ def install(root, extras='ocr,retrieval,graph,community'):
         raise RuntimeError(
             f'This bundle supports Kaggle Python 3.12 or 3.13; found {python_version[0]}.{python_version[1]}.'
         )
-    constraints = (root / 'kaggle/constraints.txt').read_text(encoding='utf-8')
+    constraints_path = root / 'src/offline/kaggle/constraints.txt'
+    constraints = constraints_path.read_text(encoding='utf-8')
     for name in ('torch', 'torchvision', 'torchaudio'):
         try:
             constraints += f'\n{name}=={version(name)}'
         except PackageNotFoundError:
             if name == 'torch':
                 raise RuntimeError('Enable a Kaggle GPU environment before setup.')
-    constraint_path = root / 'kaggle/runtime_constraints.txt'
+    constraint_path = root / 'src/offline/kaggle/runtime_constraints.txt'
+    constraint_path.parent.mkdir(parents=True, exist_ok=True)
     constraint_path.write_text(constraints + '\n', encoding='utf-8')
     env_dir = Path('/tmp/vn_labor_env')
     python = env_dir / 'bin/python'

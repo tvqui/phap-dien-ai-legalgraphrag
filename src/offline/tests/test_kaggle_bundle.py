@@ -88,6 +88,7 @@ class KaggleTests(unittest.TestCase):
                 first = bootstrap.install(root)
                 second = bootstrap.install(root)
             self.assertEqual(first, second)
+            self.assertTrue((root / 'src/offline/kaggle/runtime_constraints.txt').is_file())
             calls = [call.args[0] for call in run.call_args_list]
             self.assertEqual(len(calls), 4)
             for cmd in calls[::2]:
@@ -109,6 +110,7 @@ class KaggleTests(unittest.TestCase):
                  patch('importlib.metadata.version', return_value='2.10.0'):
                 python = bootstrap.install(root, extras='retrieval,graph,community')
             self.assertEqual(python, Path('/tmp/vn_labor_env/bin/python'))
+            self.assertTrue((root / 'src/offline/kaggle/runtime_constraints.txt').is_file())
             self.assertEqual(len(run.call_args_list), 2)
             install = run.call_args_list[1].args[0]
             self.assertTrue(any(str(arg).endswith('[retrieval,graph,community]') for arg in install))

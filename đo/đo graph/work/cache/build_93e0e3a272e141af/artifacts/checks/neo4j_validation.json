@@ -1,8 +1,0 @@
-{
-  "passed": true,
-  "dataset_id": "vn-labor-offline",
-  "build_id": "3e43d1d43b966e8100ba187e69a21fcd8f885b2586a1584b58c428c31851877e",
-  "nodes": 53227,
-  "edges": 80559,
-  "mode": "transactional_replace"
-}
