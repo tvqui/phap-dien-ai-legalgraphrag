@@ -1,99 +1,179 @@
 # Pháp Điển AI — LegalGraphRAG cho pháp luật lao động Việt Nam
 
-Dự án gồm pipeline xây dựng dữ liệu **OFFLINE**, Backend hỏi đáp có căn cứ **ONLINE**, giao diện web và bộ đánh giá. Hệ thống kết hợp BM25, Dense BGE-M3/FAISS, đồ thị pháp lý và các vai trò Researcher, Auditor, Adjudicator; câu trả lời được kiểm tra nội dung và trích dẫn theo cấu hình.
+Repository: [tvqui/phap-dien-ai-legalgraphrag](https://github.com/tvqui/phap-dien-ai-legalgraphrag)
 
-## Đọc và chạy từ đâu?
+Dự án gồm quy trình **OFFLINE** để xây dựng/kiểm tra dữ liệu, Backend **ONLINE** để truy xuất căn cứ và tạo câu trả lời, giao diện web và bộ đánh giá. Backend đọc artifact đã xây dựng; nó không tự tìm luật mới trên web theo từng câu hỏi.
 
-| Nhu cầu | Điểm bắt đầu |
-|---|---|
-| Hiểu kiến trúc và giới hạn | [Kiến trúc](docs/architecture.md) |
-| Chạy Backend và giao diện | [ONLINE](docs/online.md), [Frontend](src/online/frontend/README.md) |
-| Xây dữ liệu từ đầu | [OFFLINE](docs/offline.md) |
-| Hiểu gói artifact và báo cáo | [Cấu trúc đầu ra OFFLINE](docs/offline/artifact-layout.md) |
-| Chạy trên Kaggle | [Kaggle](docs/kaggle.md), [Notebook Backend](src/online/backend/kaggle/ONLINE_Backend.ipynb) |
-| Đo và so sánh hệ thống | [Bộ đo](evaluation/README.md), [Ablation](evaluation/ABLATION_GUIDE.md), [Graph QA](evaluation/graph_qa/README.md) |
-| Xem số liệu đã lưu | [Bảng kết quả và phạm vi so sánh](evaluation/results_summary/README.md) |
-| Kiểm tra trước khi nộp | [Kiểm chứng bản bàn giao](docs/project-completion.md) |
+## Chọn đúng quy trình
 
-## Tổ chức repository
+| Nhu cầu | Hướng dẫn | Đầu ra |
+|---|---|---|
+| Chạy API và giao diện trên máy | [Chạy ONLINE local](#chạy-online-trên-máy-local-windows) | API http://127.0.0.1:8000, giao diện http://127.0.0.1:5173 |
+| Chạy Backend trên Kaggle | [Chạy Backend ONLINE trên Kaggle](#chạy-backend-online-trên-kaggle) | URL Backend tạm thời và log |
+| Dựng dữ liệu từ đầu | [OFFLINE](docs/offline.md), [đóng gói artifact](docs/offline/artifact-layout.md) | vn_labor_online.zip và gói review |
+| Đo chất lượng | [evaluation/README.md](evaluation/README.md) | Kết quả theo từng phép đo |
 
-```text
+## Cấu trúc repository
+
+~~~text
 src/
-  offline/src/vn_labor_offline/  Package dựng/kiểm định dữ liệu
-  offline/config/, scripts/, kaggle/, tests/
-  online/backend/src/vn_labor_online/  Package API và truy xuất
-  online/backend/config/, scripts/, kaggle/, tests/
-  online/frontend/               Giao diện React/Vite
-  run.ps1                         Launcher được run.bat gọi
-evaluation/                       Suite, Gold, notebooks và kết quả nhỏ
-docs/                             Tài liệu kiến trúc, chạy và đánh giá
-dev/tools/coding_team/            Công cụ hỗ trợ phát triển tùy chọn
-```
+  offline/src/vn_labor_offline/       Xây dựng, chuẩn hóa và kiểm tra dữ liệu
+  offline/config, scripts, kaggle, tests
+  online/backend/src/vn_labor_online/ API, truy xuất, kiểm chứng, tạo câu trả lời
+  online/backend/config, scripts, kaggle, tests
+  online/frontend/                    Giao diện React/Vite
+evaluation/                           Gold, giao thức đo, mã đo, notebook Kaggle
+data/                                 Hướng dẫn về dữ liệu; dữ liệu lớn không lên Git
+docs/                                 Kiến trúc và hướng dẫn
+~~~
 
-`evaluation/` giữ riêng protocol và dữ liệu đánh giá; package runtime không phụ thuộc vào benchmark. `run.bat` ở root gọi launcher ổn định `src/run.ps1`.
+Artifact lớn, PDF nguồn, cache, model weights và API keys không thuộc Git. Không commit .env, token hay khóa API.
 
-## Chạy nhanh trên Windows
+## Chạy ONLINE trên máy local (Windows)
 
-Cần Python 3.12 hoặc 3.13, Node.js tương thích với frontend, một artifact đã xây dựng và các dịch vụ/model được cấu hình cho chế độ muốn chạy.
+### Điều kiện
 
-```bat
+- Windows 10/11, Git, Python **3.12 hoặc 3.13**, Node.js LTS được Vite hỗ trợ.
+- Một artifact OFFLINE đã qua kiểm tra, thường là vn_labor_online.zip.
+- Internet lần đầu để cài thư viện/tải model. GPU không bắt buộc nhưng giúp Dense retrieval nhanh hơn.
+- Ollama, Docker/Neo4j chỉ cần nếu cấu hình bạn chọn yêu cầu; không bắt buộc cho các bước mặc định dưới đây.
+
+### 1. Clone repo và cài môi trường
+
+Mở PowerShell:
+
+~~~powershell
+git clone https://github.com/tvqui/phap-dien-ai-legalgraphrag.git
+Set-Location -LiteralPath ./phap-dien-ai-legalgraphrag
 run.bat setup-full
-```
+~~~
 
-Git **không chứa** corpus PDF, trọng số model, môi trường cài sẵn hoặc các ZIP artifact lớn. Xem [dữ liệu đầu vào](data/README.md) và [cách nạp artifact](docs/online.md). Khi dùng một artifact khác với bản ghim trong YAML, tạo cấu hình ghim mới; không bỏ kiểm fingerprint.
+Nếu repo đã có trên máy, mở PowerShell tại thư mục gốc repo và chạy run.bat setup-full.
 
-Sau khi cấu hình artifact và dịch vụ:
+### 2. Đặt artifact
 
-```bat
-run.bat online-check
-run.bat online
-```
+Tạo thư mục rồi chép **file vn_labor_online.zip** vào:
 
-Trong terminal khác:
+~~~powershell
+New-Item -ItemType Directory -Force build/releases | Out-Null
+~~~
 
-```bat
+Đường dẫn mẫu phải là build/releases/vn_labor_online.zip. Không dùng vn_labor_offline_review.zip, Gold ZIP, checkpoint hoặc thư mục nghiên cứu làm artifact chạy.
+
+### 3. Ghim đúng artifact vào cấu hình
+
+Chạy từ thư mục gốc:
+
+~~~powershell
+./.venv/Scripts/python.exe -B -X utf8 src/online/backend/scripts/pin_online_artifact.py --artifact build/releases/vn_labor_online.zip --base-config src/online/backend/config/online.yaml --output build/online_pinned.yaml
+~~~
+
+Lệnh kiểm tra tương thích kỹ thuật và ghi fingerprint vào build/online_pinned.yaml; nó không phê duyệt nội dung pháp luật. Mỗi lần đổi artifact, chạy lại lệnh. Không giữ fingerprint cũ và không bỏ kiểm tra.
+
+Nếu file gốc .env có VN_LABOR_ARTIFACT_SOURCE, bảo đảm nó cũng trỏ tới đúng ZIP:
+
+~~~dotenv
+VN_LABOR_ARTIFACT_SOURCE=build/releases/vn_labor_online.zip
+~~~
+
+### 4. Kiểm tra và chạy API
+
+~~~powershell
+run.bat online-check -Config build/online_pinned.yaml
+run.bat online -Config build/online_pinned.yaml
+~~~
+
+Giữ cửa sổ PowerShell mở. API ở http://127.0.0.1:8000; tài liệu API ở http://127.0.0.1:8000/docs. Trạng thái có ở /health và /ready.
+
+Cấu hình mẫu dùng deterministic cho một số vai trò. Chỉ khi bật Gemini mới cần GEMINI_API_KEY; nếu bật Ollama thì cần chạy Ollama và tải đúng model. Gemini qua Internet không đồng nghĩa hệ thống tra luật mới trên web.
+
+### 5. Chạy giao diện
+
+Mở **PowerShell thứ hai** tại thư mục gốc repo:
+
+~~~powershell
 run.bat frontend
-```
+~~~
 
-Frontend thường ở `http://localhost:5173`, API ở `http://127.0.0.1:8000`, tài liệu API ở `/docs`. `.env` có thể ghi đè cấu hình YAML; chỉ dùng `.env.example` làm mẫu, không đưa khóa vào Git.
+Mở http://127.0.0.1:5173. Dừng từng tiến trình bằng Ctrl+C trong cửa sổ tương ứng.
 
-## Xây dựng và kiểm thử
+Kiểm tra local bằng run.bat help, run.bat test hoặc run.bat validate. Test dùng fixture/mock ở các bước cần dịch vụ ngoài; PASS không thay việc duyệt pháp lý.
 
-```bat
-run.bat offline
-run.bat load-neo4j
-run.bat validate
-run.bat test
-```
+## Chạy Backend ONLINE trên Kaggle
 
-OFFLINE tạo `vn_labor_online.zip` để chạy Backend và `vn_labor_offline_review.zip` để xem báo cáo, dữ liệu trung gian. Quy trình đầy đủ và điều kiện đóng gói được mô tả trong [artifact-layout.md](docs/offline/artifact-layout.md).
+Notebook Backend tự lấy mã mới nhất từ main, dò artifact theo cấu trúc, kiểm fingerprint và dừng nếu không tương thích. Chỉ cần thêm Dataset artifact; **không cần tải code thành Kaggle Dataset**. Notebook phải chạy trong phiên tương tác để API/tunnel còn hoạt động.
 
-Frontend:
+### 1. Import đúng notebook
 
-```powershell
-cd src/online/frontend
-npm ci
-npm test
-npm run lint
-npm run build
-```
+Mở [ONLINE_Backend.ipynb trên GitHub](https://github.com/tvqui/phap-dien-ai-legalgraphrag/blob/main/src/online/backend/kaggle/ONLINE_Backend.ipynb), tải file .ipynb về máy. Trong Kaggle, tạo Notebook mới, chọn **File → Import Notebook** rồi tải file vừa lưu. Đây là notebook Backend, không phải notebook OFFLINE hay notebook đo.
 
-Xem `run.bat help` để biết toàn bộ lệnh. Kiểm thử local dùng fixture/mock ở những bước cần dịch vụ ngoài; test PASS không có nghĩa toàn bộ câu trả lời đã được kiểm duyệt pháp lý.
+### 2. Thêm tài nguyên Kaggle
 
-## Phạm vi khoa học và giới hạn
+1. Bật **Internet** trong Settings.
+2. Chọn GPU **T4 x2** nếu tùy chọn có sẵn.
+3. Chọn **Add Input → Datasets**, thêm đúng **một** Dataset chứa artifact OFFLINE cuối đã kiểm tra.
+4. Trong Secrets, tạo và cấp quyền cho các tên chính xác: GEMINI_API_KEY, VN_LABOR_API_KEY (chuỗi ngẫu nhiên ít nhất 32 ký tự), NGROK_AUTHTOKEN; HF_TOKEN là tùy chọn.
 
-- Khả năng trả lời phụ thuộc phạm vi, chất lượng nguồn, phiên bản và ngày chốt của artifact được nạp.
-- Ngày hỏi, điều kiện áp dụng và ngoại lệ phải được kiểm tra; thiếu dữ kiện thì hỏi bổ sung, thiếu căn cứ thì giới hạn hoặc từ chối kết luận.
-- Gold và điểm AI phải được công bố đúng trạng thái. Không gộp retrieval, QA và dự đoán bản án thành một độ chính xác chung.
-- Chỉ đối chiếu các lần đo tương đương về dữ liệu, code, model và điều kiện. Các kết quả lưu hiện tại gồm những lần khác phiên bản; không tự suy ra đóng góp nhân quả từ chúng.
-- Thông tin nguồn/hiệu lực chưa được duyệt vẫn phải được công bố; hệ thống không cam kết bao phủ mọi câu hỏi pháp luật.
+Ví dụ tên Dataset để tìm trong Add Input, theo Dataset đã dùng:
 
-## Dữ liệu và công cụ phát triển cục bộ
+~~~text
+phapdienai-labor-artifact-final-v2
+~~~
 
-`data/`, `artifacts/`, `build/`, `.cache/`, `.venv/`, `node_modules/`, `.env` và các lần chạy được Git-ignore. Chúng có thể tồn tại trên máy để tiếp tục làm việc nhưng không thuộc bản mã nguồn nộp Git.
+Bên trong Dataset, cấu trúc mẫu là artifacts/ gồm 00_manifest/, 01_extracted/, 02_registry/, 03_structure/, 04_knowledge/, 05_graph/, 06_indexes/ và reports/. Đường dẫn mount ví dụ:
 
-Tài liệu lịch sử, ZIP kết quả và bundle cũ được bảo quản ngoài repository. Bản Git giữ tài liệu hiện hành, mã đo và bảng tổng hợp nhỏ có truy vết. [Coding Team](dev/tools/coding_team/README.md) là tiện ích tùy chọn; [AGENTS.md](AGENTS.md) chỉ hướng dẫn công cụ phát triển, không phải phần của mô hình pháp lý.
+~~~text
+/kaggle/input/phapdienai-labor-artifact-final-v2/artifacts
+~~~
 
-## Cấu trúc và trách nhiệm thư mục
+Kaggle có thể chuẩn hóa tên mount; notebook tự dò trong /kaggle/input, không cần nhập đường dẫn nếu chỉ có một artifact hợp lệ. Không thêm gói review, Gold ZIP, checkpoint hay code bundle thay artifact ONLINE.
 
-Phân loại chi tiết các phần, điểm vào chính và nội dung local bị loại khỏi Git được ghi tại [docs/project-structure.md](docs/project-structure.md).
+### 3. Chạy và xác nhận
+
+1. Chọn **Run All** trong phiên tương tác.
+2. Đợi kiểm tra GPU, Input, Secrets, lấy code GitHub, ghim artifact và khởi động Backend.
+3. Log cần có Preflight GPU/Internet/Input/Secrets: PASS, dòng Input đã chọn: trỏ vào Dataset vừa thêm và URL Backend.
+4. Để cell cuối tiếp tục chạy. Dừng cell hoặc đóng phiên sẽ làm server/tunnel ngừng hoạt động.
+
+Để dùng giao diện local với Backend Kaggle, ghi URL và token vào src/online/frontend/.env trên máy local:
+
+~~~dotenv
+VITE_BACKEND_TARGET=https://URL-BACKEND-VUA-NHAN
+BACKEND_PROXY_TOKEN=GIA_TRI_VN_LABOR_API_KEY
+~~~
+
+Sau đó chạy run.bat frontend, mở http://127.0.0.1:5173. Không commit .env. URL tunnel có thể đổi sau khi Kaggle restart. Khi báo lỗi, lưu Commit đang dùng:, Input đã chọn: và mã lỗi; không gửi API key/token.
+
+### Dựng dữ liệu OFFLINE trên Kaggle
+
+Đây là quy trình khác với chạy Backend ONLINE:
+
+1. Tạo bundle private từ repo local:
+   ~~~powershell
+   ./.venv/Scripts/python.exe src/offline/scripts/package_kaggle.py
+   ~~~
+2. Dùng notebook và bundle trong build/kaggle/; import notebook, thêm Dataset code/corpus cần thiết và làm theo [hướng dẫn OFFLINE Kaggle](docs/kaggle/guide.md).
+3. Khi OFFLINE qua validation, tải vn_labor_online.zip từ Output, đưa vào một Dataset (ví dụ tên ở trên), rồi thêm Dataset làm Input cho Backend.
+4. Giữ vn_labor_offline_review.zip để xem báo cáo/trung gian; không dùng nó làm artifact Backend.
+
+## Notebook đánh giá
+
+Notebook đo chính nằm dưới evaluation/: evaluation/suite/, evaluation/notebooks/, evaluation/graph_qa/. Chúng clone repo, cài package từ checkout và lưu kết quả theo lần chạy. Notebook recovery cần checkpoint và commit gốc; không đổi commit khi tiếp tục lần đo cũ.
+
+Trước khi so sánh, kiểm tra cùng artifact, Gold, commit, model và cấu hình. Xem [README bộ đánh giá](evaluation/README.md). Không gộp Retrieval, QA, AI-judge và human review thành một điểm chính xác chung.
+
+## Giới hạn
+
+- Hệ thống chỉ trả lời trong phạm vi dữ liệu và phiên bản luật có trong artifact; công bố ngày chốt và trạng thái phê duyệt.
+- Fingerprint xác nhận artifact khớp cấu hình, không chứng minh căn cứ đúng luật.
+- Không đưa secret, dữ liệu nhạy cảm hoặc artifact riêng tư lên GitHub công khai.
+
+## Tài liệu
+
+- [Kiến trúc](docs/architecture.md)
+- [ONLINE và nạp artifact](docs/online.md)
+- [Pipeline OFFLINE](docs/offline.md)
+- [Cấu trúc đầu ra OFFLINE](docs/offline/artifact-layout.md)
+- [Notebook Backend Kaggle](src/online/backend/kaggle/ONLINE_Backend.ipynb)
+- [Bộ đánh giá](evaluation/README.md)
+- [Kiểm tra trước khi nộp](docs/project-completion.md)
