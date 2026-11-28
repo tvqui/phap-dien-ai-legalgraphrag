@@ -637,6 +637,9 @@ def execute(args, baseline=False):
     if args.repeats < 1 or args.k < 1 or args.k > settings.get('candidate_k', 30) or (args.limit is not None and args.limit < 1):
         raise ValueError('Positive repeats/limit; K must be inside the candidate pool')
     available = BASELINES if baseline else RETRIEVAL if args.task == 'retrieval' else ABLATIONS
+    if baseline and args.task == 'retrieval':
+        from adapters import GEMINI_QA_BASELINES
+        available = tuple(method for method in available if method not in GEMINI_QA_BASELINES)
     methods = list(available) if args.methods == ['all'] else args.methods
     if set(methods) - set(available) or len(methods) != len(set(methods)):
         raise ValueError('Invalid or duplicate methods: ' + ','.join(methods))

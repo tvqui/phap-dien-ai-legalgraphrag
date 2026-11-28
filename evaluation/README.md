@@ -23,6 +23,7 @@ Cell dọn dịch vụ chỉ chạy khi kết thúc mọi phase trong phiên. Kh
 | BM25, Dense, Hybrid RRF, Hybrid + reranker, Hybrid + Graph, Hybrid + Graph + reranker | Adapter truy xuất hiện có, cùng corpus và bộ lọc | So truy xuất; Graph ở đây mở rộng cố định, **không phải Microsoft GraphRAG** |
 | Full, bỏ BM25/Dense/Graph/Researcher/Auditor/Adjudicator/reranker/hậu kiểm | Pipeline ONLINE trong tiến trình đo | Ablation có ghi cấu hình và dấu vết thành phần đã thực thi |
 | Naive BM25/Dense/Hybrid RAG | Retriever + một reader chung | Baseline tối giản thực, không gắn tên framework khác |
+| Gemini trực tiếp / Gemini + cùng bằng chứng | Gemini 3.1 Flash Lite; không truy xuất / top-10 Hybrid + reranker trên cùng artifact | Hai baseline QA riêng, không dùng Gold ở inference; xem mục 12 |
 | LightRAG | Adapter tùy chọn dùng `ainsert` / `aquery_data`, môi trường riêng | Đã đối chiếu API; chưa chạy end-to-end upstream trong phiên xây dựng này |
 | HippoRAG2 | Adapter tùy chọn dùng `index` / `retrieve`, ánh xạ chính xác `QuerySolution.docs` | Đã đối chiếu API; chưa chạy end-to-end upstream trong phiên này |
 | Microsoft GraphRAG, RAPTOR | Hiện **N/A** | Chưa có adapter được kiểm chứng nối context/report/summary về đúng canonical provision; không thay bằng đồ thị/tree tự chế |
@@ -261,3 +262,94 @@ Script kiểm graph hash, ghi predictions từ inference-only input trước khi
 chấm. Dữ liệu vẫn DRAFT/development. Cần đo mới thật trên Kaggle: push code cần thiết,
 Run All để lấy code mới, đổi RUN_NAME (ví dụ `labor120_graph_reference_v2`), RESUME=False,
 smoke rồi standard. Không trộn với ZIP cũ hay diễn giải replay thành latency end-to-end.
+
+## 12. Đo Gemini trực tiếp và Gemini với cùng nguồn luật
+
+Hai cấu hình dùng chung Gemini `gemini-3.1-flash-lite`, ngày áp dụng từ Gold,
+schema đầu ra, giới hạn câu trả lời và rubric chấm. `gemini_direct` chỉ nhận câu
+hỏi/ngày, không dùng tìm kiếm ngoài hoặc tài liệu; `gemini_same_evidence` nhận
+top-10 đoạn Hybrid + reranker lấy từ đúng artifact/Gold bundle. Gold answer,
+qrels, trạng thái chuẩn và ID câu hỏi không được gửi vào prompt. Mỗi cấu hình/câu
+có một lượt generation dự kiến; SDK có thể tạo thêm attempt khi retry. Judge là
+lượt gọi riêng nếu bật `--judge`.
+
+Lưu ý: “cùng bằng chứng” trong phép đo này nghĩa là cùng chính sách truy xuất
+Hybrid + reranker trên cùng artifact, không phải EvidencePack thích ứng đã lưu
+trong một lần Full QA cũ. Kết quả Full cũ vẫn có thể đặt cạnh hai baseline khi
+Gold SHA, ngày áp dụng và metric khớp, nhưng nếu khác model/cấu hình/run protocol
+thì đó là so sánh mô tả, không phải đối chứng ghép cặp nghiêm ngặt. Chỉ so câu
+hỏi thành công chung và ghi rõ mẫu số; không biến 119 kết quả thành 120.
+
+### Chuẩn bị một lần
+
+Kiểm tra model ID Gemini còn được API key của bạn hỗ trợ. Không sửa file
+`online_kaggle.yaml` dùng cho hệ thống; cấu hình baseline riêng nằm trong
+`settings.gemini.example.json` và `online_gemini_baseline.yaml`.
+
+```powershell
+# Chạy tại thư mục gốc repo, dùng Python của dự án.
+$python = ".\.venv\Scripts\python.exe"
+& $python evaluation\core\evaluate_baselines.py prepare `
+  --artifact "build\releases\runtime_20261118\vn_labor_online.zip" `
+  --gold "evaluation\gold\PhapDienAI_Gold_120_Labor_v0_2.zip" `
+  --bundle "evaluation\core\work\gemini_bundle120" `
+  --cache "evaluation\core\cache" `
+  --allow-draft
+```
+
+Bundle đã được chuẩn bị trong workspace hiện tại. Nếu `gemini_bundle120`
+đã tồn tại, bỏ qua lệnh `prepare` và dùng bundle đó; không xóa/ghi đè. Khi
+cần tạo lại, chọn tên bundle mới.
+
+### Smoke trước, rồi mới chạy đủ 120 câu
+
+Cấp `GEMINI_API_KEY` vào môi trường PowerShell hiện tại hoặc Kaggle Secret
+`GEMINI_API_KEY`; không đặt key vào JSON, lệnh có thể lưu trong history, `.env`
+được commit hoặc Git. Không in key ra log.
+
+```powershell
+# Nhập key ẩn và chỉ giữ trong process PowerShell hiện tại.
+$secureKey = Read-Host "Gemini API key" -AsSecureString
+$env:GEMINI_API_KEY = [System.Net.NetworkCredential]::new("", $secureKey).Password
+
+# Smoke: 4 câu × 2 cấu hình = 8 lượt generation. Đây chỉ là kiểm tra đường chạy.
+& $python evaluation\core\evaluate_baselines.py run `
+  --bundle "evaluation\core\work\gemini_bundle120" `
+  --config "evaluation\core\settings.gemini.example.json" `
+  --out "evaluation\core\results\gemini_smoke" `
+  --task qa --methods gemini_direct gemini_same_evidence `
+  --limit 4 --repeats 1 --allow-draft --allow-llm
+
+# Đo chính: 120 câu × 2 cấu hình = 240 lượt generation.
+& $python evaluation\core\evaluate_baselines.py run `
+  --bundle "evaluation\core\work\gemini_bundle120" `
+  --config "evaluation\core\settings.gemini.example.json" `
+  --out "evaluation\core\results\gemini_main" `
+  --task qa --methods gemini_direct gemini_same_evidence `
+  --repeats 1 --allow-draft --allow-llm --judge
+
+Remove-Item Env:GEMINI_API_KEY
+```
+
+`--judge` thêm tối đa 240 lượt chấm Gemini; nếu muốn tách chi phí, bỏ cờ này
+rồi chấm output đã lưu sau đó:
+
+```powershell
+& $python evaluation\core\evaluate_baselines.py judge `
+  --run "evaluation\core\results\gemini_main" --allow-llm
+```
+
+Kết quả nằm trong `responses.jsonl`, `run_manifest.json` và
+`report\comparison.md/.csv/.json`. Mỗi lượt lưu câu trả lời, nguồn được cấp,
+trạng thái, lỗi, thời gian và metric citation group recall. Citation ID của
+Gemini + evidence được ràng buộc vào nguồn có thật trong bundle; Gemini trực
+tiếp không được phép tạo citation ID. Điểm AI judge là ý kiến mô hình, không
+phải đánh giá pháp lý của chuyên gia; nên chấm mù một mẫu kết quả bởi người có
+chuyên môn. Gold 120 vẫn là DRAFT/development và chưa phải held-out.
+
+Retriever cho nhánh Gemini + evidence cần tải BGE-M3 và reranker đã pin; CPU
+có thể chạy chậm. Dùng `device: "cuda:0"` trong bản settings riêng nếu máy có
+GPU phù hợp, không thay model/revision giữa smoke và run chính. Lỗi/quota không
+được tính là câu trả lời sai hay score 0; giữ nguyên run và dùng `--resume` chỉ
+khi config, code, artifact và Gold không đổi. Output trong `evaluation\core\work`
+và `results` đã bị `.gitignore` loại khỏi commit.

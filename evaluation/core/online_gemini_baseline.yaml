@@ -1,0 +1,28 @@
+online:
+  artifact_source: "build/releases/runtime_20261118/vn_labor_online.zip"
+  cache_dir: "evaluation/core/cache"
+  request_timeout_seconds: 180
+  embedding_model: "BAAI/bge-m3"
+  embedding_device: "cpu"
+  embedding_use_fp16: false
+  retrieval:
+    exact_lookup: false
+    bm25_enabled: true
+    bm25_top_k: 30
+    dense_enabled: true
+    dense_top_k: 30
+    fusion_top_k: 60
+  reranker:
+    enabled: true
+    model: "BAAI/bge-reranker-v2-m3"
+    top_n: 60
+    max_length: 1024
+    device: "cpu"
+    use_fp16: false
+  adjudication:
+    mode: "gemini"
+    model: "gemini-3.1-flash-lite"
+    primary_budget_seconds: 45
+    context_tokens: 32768
+    max_output_tokens: 6144
+    timeout_seconds: 180
